@@ -1,0 +1,13 @@
+{
+  "name": "direze",
+  "private": true,
+  "workspaces": ["packages/shared", "api", "consumer", "frontend"],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev:api": "npm run dev -w api",
+    "dev:consumer": "npm run dev -w consumer",
+    "dev:frontend": "npm run dev -w frontend",
+    "test": "npm test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  }
+}

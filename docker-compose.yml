@@ -1,0 +1,91 @@
+version: "3.9"
+
+services:
+  # ─── Message Broker ─────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on: [zookeeper]
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  # ─── Databases ───────────────────────────────────────────────────
+  mongo:
+    image: mongo:7.0
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: direze
+    volumes:
+      - mongo_data:/data/db
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: direze
+      POSTGRES_USER: direze
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-direze}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./infra/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  # ─── Application Services ─────────────────────────────────────────
+  api:
+    build: ./api
+    ports:
+      - "8080:8080"
+    depends_on: [kafka, mongo, postgres]
+    environment:
+      PORT: 8080
+      KAFKA_BROKERS: kafka:29092
+      MONGO_URI: mongodb://mongo:27017/direze
+      POSTGRES_DSN: postgres://direze:${POSTGRES_PASSWORD:-direze}@postgres:5432/direze?sslmode=disable
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      UPLOAD_DIR: /tmp/uploads
+    volumes:
+      - uploads:/tmp/uploads
+
+  consumer:
+    build: ./consumer
+    depends_on: [kafka, mongo, postgres]
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: direze-consumer
+      MONGO_URI: mongodb://mongo:27017/direze
+      POSTGRES_DSN: postgres://direze:${POSTGRES_PASSWORD:-direze}@postgres:5432/direze?sslmode=disable
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      UPLOAD_DIR: /tmp/uploads
+    volumes:
+      - uploads:/tmp/uploads
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on: [api]
+    environment:
+      NEXT_PUBLIC_API_URL: http://api:8080/api
+
+volumes:
+  mongo_data:
+  pg_data:
+  uploads:
