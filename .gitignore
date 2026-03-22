@@ -6,6 +6,7 @@
 node_modules/
 dist/
 .next/
+next-env.d.ts
 *.tsbuildinfo
 
 # Uploads (local dev artifacts)
