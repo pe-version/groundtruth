@@ -10,6 +10,7 @@ export type DocumentStatus =
 
 export interface Document {
   _id: string;
+  userId: string;
   filename: string;
   status: DocumentStatus;
   chunkCount: number;

@@ -10,11 +10,9 @@ const handler = NextAuth({
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        // In production, validate against a real user store.
-        // For now, accept any non-empty credentials and generate a session.
         if (!credentials?.username || !credentials?.password) return null;
 
-        // Call the API to get a JWT token
+        // Call the API to authenticate and get a JWT token
         const res = await fetch(
           `${process.env.NEXTAUTH_API_URL ?? "http://localhost:8080"}/api/auth/login`,
           {
@@ -41,14 +39,19 @@ const handler = NextAuth({
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
-        token.accessToken = (user as any).accessToken;
+        token.accessToken = (user as { accessToken?: string }).accessToken;
       }
       return token;
     },
     async session({ session, token }) {
-      (session as any).accessToken = token.accessToken;
+      (session as { accessToken?: string }).accessToken =
+        token.accessToken as string;
       return session;
     },
+  },
+  session: {
+    strategy: "jwt",
+    maxAge: 3600, // 1 hour — matches API token expiry
   },
   pages: {
     signIn: "/login",

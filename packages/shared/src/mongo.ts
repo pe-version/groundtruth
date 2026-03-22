@@ -25,16 +25,17 @@ export class MongoDB {
   }
 
   async insertDocument(doc: Document): Promise<void> {
-    await this.docs.insertOne(doc);
+    await this.docs.insertOne(doc as any);
   }
 
   async getDocument(id: string): Promise<Document | null> {
     return this.docs.findOne({ _id: id } as any) as Promise<Document | null>;
   }
 
-  async listDocuments(): Promise<Document[]> {
+  async listDocuments(userId?: string): Promise<Document[]> {
+    const filter = userId ? { userId } : {};
     return this.docs
-      .find()
+      .find(filter)
       .sort({ uploadedAt: -1 })
       .toArray() as Promise<Document[]>;
   }
@@ -67,15 +68,20 @@ export class MongoDB {
     await this.docs.deleteOne({ _id: id } as any);
   }
 
-  async getStatusSummary(): Promise<
+  async getStatusSummary(userId?: string): Promise<
     { status: DocumentStatus; count: number }[]
   > {
+    const pipeline: object[] = [];
+    if (userId) {
+      pipeline.push({ $match: { userId } });
+    }
+    pipeline.push(
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $project: { _id: 0, status: "$_id", count: 1 } },
+    );
     return this.docs
-      .aggregate([
-        { $group: { _id: "$status", count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $project: { _id: 0, status: "$_id", count: 1 } },
-      ])
+      .aggregate(pipeline)
       .toArray() as Promise<{ status: DocumentStatus; count: number }[]>;
   }
 }

@@ -29,9 +29,6 @@ async function main() {
   const dlq = new DeadLetterQueue(kafka);
   await dlq.connect();
 
-  // Track retry counts per document
-  const retryCounts = new Map<string, number>();
-
   console.log("Consumer started, waiting for messages...");
 
   await consumer.run({
@@ -53,7 +50,7 @@ async function main() {
       try {
         event = JSON.parse(value);
       } catch (err) {
-        console.error("Could not parse message:", err, "— sending to DLQ");
+        console.error("Could not parse message, sending to DLQ");
         await dlq.send(
           { key: message.key?.toString(), value, topic, partition, offset: message.offset },
           err instanceof Error ? err : new Error(String(err))
@@ -67,22 +64,33 @@ async function main() {
       );
       await db.updateStatus(event.documentId, DocumentStatus.Processing, 0);
 
-      try {
-        await heartbeat();
-        const chunkCount = await processDocument(event, db, vectorStore);
-        await db.updateStatus(
-          event.documentId,
-          DocumentStatus.Ready,
-          chunkCount
-        );
-        console.log(
-          `Done: ${event.documentId} — ${chunkCount} chunks indexed`
-        );
-        retryCounts.delete(event.documentId);
-      } catch (err) {
-        const retries = (retryCounts.get(event.documentId) ?? 0) + 1;
-        retryCounts.set(event.documentId, retries);
+      // Retrieve retry count from the document's current state in MongoDB
+      const existingDoc = await db.getDocument(event.documentId);
+      const previousRetries = existingDoc?.errorMsg
+        ? parseInt(existingDoc.errorMsg.match(/attempt (\d+)/)?.[1] ?? "0", 10)
+        : 0;
 
+      try {
+        // Periodic heartbeat to prevent rebalancing during long processing
+        const heartbeatInterval = setInterval(() => {
+          heartbeat().catch(() => {});
+        }, 5000);
+
+        try {
+          const chunkCount = await processDocument(event, db, vectorStore, config.UPLOAD_DIR);
+          await db.updateStatus(
+            event.documentId,
+            DocumentStatus.Ready,
+            chunkCount
+          );
+          console.log(
+            `Done: ${event.documentId} — ${chunkCount} chunks indexed`
+          );
+        } finally {
+          clearInterval(heartbeatInterval);
+        }
+      } catch (err) {
+        const retries = previousRetries + 1;
         const error = err instanceof Error ? err : new Error(String(err));
 
         if (retries >= MAX_RETRIES) {
@@ -97,13 +105,12 @@ async function main() {
             { key: message.key?.toString(), value, topic, partition, offset: message.offset },
             error
           );
-          retryCounts.delete(event.documentId);
         } else {
           console.error(
             `Error processing ${event.documentId} (attempt ${retries}/${MAX_RETRIES}):`,
-            err
+            error.message
           );
-          await db.markFailed(event.documentId, error.message);
+          await db.markFailed(event.documentId, `attempt ${retries}: ${error.message}`);
         }
       }
 
@@ -114,10 +121,10 @@ async function main() {
   // Graceful shutdown
   const shutdown = async () => {
     console.log("Consumer shutting down...");
-    await consumer.disconnect();
-    await dlq.disconnect();
-    await vectorStore.close();
-    await db.disconnect();
+    try { await consumer.disconnect(); } catch (err) { console.error("Error disconnecting consumer:", err); }
+    try { await dlq.disconnect(); } catch (err) { console.error("Error disconnecting DLQ:", err); }
+    try { await vectorStore.close(); } catch (err) { console.error("Error closing VectorStore:", err); }
+    try { await db.disconnect(); } catch (err) { console.error("Error disconnecting MongoDB:", err); }
     process.exit(0);
   };
 

@@ -1,9 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { embedText, type VectorStore } from "@direze/shared";
+import { embedText, UUID_REGEX, UUID_PATTERN } from "@direze/shared";
 import { streamClaude } from "../services/anthropic.js";
-
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface QueryBody {
   documentId?: string;
@@ -12,9 +9,9 @@ interface QueryBody {
 }
 
 export async function queryRoutes(fastify: FastifyInstance) {
-  const vectorStore: VectorStore = (fastify as any).vectorStore;
+  const { vectorStore, db } = fastify;
 
-  // Non-streaming query (original endpoint)
+  // Non-streaming query
   fastify.post<{ Body: QueryBody }>(
     "/query",
     {
@@ -26,15 +23,24 @@ export async function queryRoutes(fastify: FastifyInstance) {
           type: "object",
           required: ["question"],
           properties: {
-            documentId: { type: "string", pattern: UUID_REGEX.source },
+            documentId: { type: "string", pattern: UUID_PATTERN },
             question: { type: "string", minLength: 1, maxLength: 2000 },
             topK: { type: "integer", minimum: 1, maximum: 20, default: 5 },
           },
         },
       },
     },
-    async (request) => {
+    async (request, reply) => {
       const { documentId, question, topK = 5 } = request.body;
+      const userId = request.user.sub;
+
+      // Authorization: if documentId provided, verify ownership
+      if (documentId) {
+        const doc = await db.getDocument(documentId);
+        if (!doc || doc.userId !== userId) {
+          return reply.code(404).send({ error: "Document not found" });
+        }
+      }
 
       const questionEmbedding = await embedText(question);
 
@@ -72,7 +78,7 @@ export async function queryRoutes(fastify: FastifyInstance) {
           type: "object",
           required: ["question"],
           properties: {
-            documentId: { type: "string", pattern: UUID_REGEX.source },
+            documentId: { type: "string", pattern: UUID_PATTERN },
             question: { type: "string", minLength: 1, maxLength: 2000 },
             topK: { type: "integer", minimum: 1, maximum: 20, default: 5 },
           },
@@ -81,6 +87,15 @@ export async function queryRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const { documentId, question, topK = 5 } = request.body;
+      const userId = request.user.sub;
+
+      // Authorization: if documentId provided, verify ownership
+      if (documentId) {
+        const doc = await db.getDocument(documentId);
+        if (!doc || doc.userId !== userId) {
+          return reply.code(404).send({ error: "Document not found" });
+        }
+      }
 
       const questionEmbedding = await embedText(question);
 
@@ -118,10 +133,17 @@ export async function queryRoutes(fastify: FastifyInstance) {
         `data: ${JSON.stringify({ type: "sources", sources })}\n\n`
       );
 
-      // Stream LLM tokens
-      for await (const token of streamClaude(contextString, question)) {
+      // Stream LLM tokens with error handling
+      try {
+        for await (const token of streamClaude(contextString, question)) {
+          reply.raw.write(
+            `data: ${JSON.stringify({ type: "delta", text: token })}\n\n`
+          );
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "LLM stream failed";
         reply.raw.write(
-          `data: ${JSON.stringify({ type: "delta", text: token })}\n\n`
+          `data: ${JSON.stringify({ type: "error", message })}\n\n`
         );
       }
 

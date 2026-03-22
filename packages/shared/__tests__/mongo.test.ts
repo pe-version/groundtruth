@@ -46,6 +46,7 @@ describe("MongoDB", () => {
   it("insertDocument calls insertOne", async () => {
     const doc = {
       _id: "doc-1",
+      userId: "user-1",
       filename: "test.pdf",
       status: DocumentStatus.Pending,
       chunkCount: 0,
@@ -83,7 +84,20 @@ describe("MongoDB", () => {
 
     const result = await db.listDocuments();
     expect(result).toEqual(docs);
+    expect(col.find).toHaveBeenCalledWith({});
     expect(mockSort.sort).toHaveBeenCalledWith({ uploadedAt: -1 });
+  });
+
+  it("listDocuments filters by userId when provided", async () => {
+    const mockSort = {
+      sort: vi.fn().mockReturnValue({
+        toArray: vi.fn().mockResolvedValue([]),
+      }),
+    };
+    col.find.mockReturnValueOnce(mockSort);
+
+    await db.listDocuments("user-1");
+    expect(col.find).toHaveBeenCalledWith({ userId: "user-1" });
   });
 
   it("updateStatus sets status, chunkCount, and updatedAt", async () => {
@@ -136,5 +150,16 @@ describe("MongoDB", () => {
       { $sort: { count: -1 } },
       { $project: { _id: 0, status: "$_id", count: 1 } },
     ]);
+  });
+
+  it("getStatusSummary filters by userId when provided", async () => {
+    const mockAggregate = {
+      toArray: vi.fn().mockResolvedValue([]),
+    };
+    col.aggregate.mockReturnValueOnce(mockAggregate);
+
+    await db.getStatusSummary("user-1");
+    const pipeline = col.aggregate.mock.calls[0][0];
+    expect(pipeline[0]).toEqual({ $match: { userId: "user-1" } });
   });
 });

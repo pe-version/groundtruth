@@ -73,7 +73,7 @@ describe("processDocument", () => {
       filePath: "/tmp/uploads/doc-1.pdf",
     };
 
-    const chunkCount = await processDocument(event, db, vectorStore);
+    const chunkCount = await processDocument(event, db, vectorStore, "/tmp/uploads");
 
     expect(chunkCount).toBeGreaterThanOrEqual(1);
     expect(readFile).toHaveBeenCalledWith("/tmp/uploads/doc-1.pdf");
@@ -99,9 +99,10 @@ describe("processDocument", () => {
     vi.mocked(extractTextFromPDF).mockResolvedValueOnce(longText);
 
     const chunkCount = await processDocument(
-      { documentId: "doc-2", filename: "long.pdf", filePath: "/tmp/long.pdf" },
+      { documentId: "doc-2", filename: "long.pdf", filePath: "/tmp/uploads/long.pdf" },
       db,
-      vectorStore
+      vectorStore,
+      "/tmp/uploads"
     );
 
     expect(chunkCount).toBeGreaterThan(1);
@@ -118,9 +119,10 @@ describe("processDocument", () => {
 
     await expect(
       processDocument(
-        { documentId: "doc-3", filename: "empty.pdf", filePath: "/tmp/empty.pdf" },
+        { documentId: "doc-3", filename: "empty.pdf", filePath: "/tmp/uploads/empty.pdf" },
         db,
-        vectorStore
+        vectorStore,
+        "/tmp/uploads"
       )
     ).rejects.toThrow("No text chunks produced");
   });
@@ -130,9 +132,10 @@ describe("processDocument", () => {
 
     await expect(
       processDocument(
-        { documentId: "doc-4", filename: "missing.pdf", filePath: "/tmp/missing.pdf" },
+        { documentId: "doc-4", filename: "missing.pdf", filePath: "/tmp/uploads/missing.pdf" },
         db,
-        vectorStore
+        vectorStore,
+        "/tmp/uploads"
       )
     ).rejects.toThrow("ENOENT");
   });
@@ -143,10 +146,22 @@ describe("processDocument", () => {
 
     await expect(
       processDocument(
-        { documentId: "doc-5", filename: "bad.pdf", filePath: "/tmp/bad.pdf" },
+        { documentId: "doc-5", filename: "bad.pdf", filePath: "/tmp/uploads/bad.pdf" },
         db,
-        vectorStore
+        vectorStore,
+        "/tmp/uploads"
       )
     ).rejects.toThrow("Not a valid PDF");
+  });
+
+  it("rejects file paths outside upload directory", async () => {
+    await expect(
+      processDocument(
+        { documentId: "doc-6", filename: "evil.pdf", filePath: "/etc/passwd" },
+        db,
+        vectorStore,
+        "/tmp/uploads"
+      )
+    ).rejects.toThrow("Invalid file path");
   });
 });

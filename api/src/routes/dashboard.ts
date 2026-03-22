@@ -1,11 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import type { MongoDB } from "@direze/shared";
 
 export async function dashboardRoutes(fastify: FastifyInstance) {
-  const db: MongoDB = (fastify as any).db;
+  const { db } = fastify;
 
-  fastify.get("/dashboard/stats", async () => {
-    const summary = await db.getStatusSummary();
+  fastify.get("/dashboard/stats", async (request) => {
+    const userId = request.user.sub;
+    const summary = await db.getStatusSummary(userId);
 
     const total = summary.reduce((acc, s) => acc + s.count, 0);
     const byStatus: Record<string, number> = {};

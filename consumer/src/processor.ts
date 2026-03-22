@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import pLimit from "p-limit";
 import { encodingForModel } from "js-tiktoken";
 import {
@@ -20,8 +21,18 @@ const enc = encodingForModel("gpt-4o");
 export async function processDocument(
   event: KafkaDocumentEvent,
   db: MongoDB,
-  vectorStore: VectorStore
+  vectorStore: VectorStore,
+  uploadDir?: string
 ): Promise<number> {
+  // Validate file path to prevent path traversal
+  if (uploadDir) {
+    const realFilePath = path.resolve(event.filePath);
+    const realUploadDir = path.resolve(uploadDir);
+    if (!realFilePath.startsWith(realUploadDir + path.sep) && realFilePath !== realUploadDir) {
+      throw new Error(`Invalid file path: ${event.filePath} is outside upload directory`);
+    }
+  }
+
   // 1. Read file
   const buffer = await readFile(event.filePath);
 

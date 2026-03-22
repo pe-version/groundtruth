@@ -1,10 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { UUID_REGEX, UUID_PATTERN } from "@direze/shared";
 
-// Test the UUID regex pattern used for input validation
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-describe("UUID validation", () => {
+describe("UUID validation (from shared)", () => {
   it("accepts valid UUIDs", () => {
     expect(UUID_REGEX.test("550e8400-e29b-41d4-a716-446655440000")).toBe(true);
     expect(UUID_REGEX.test("6ba7b810-9dad-11d1-80b4-00c04fd430c8")).toBe(true);
@@ -21,11 +18,14 @@ describe("UUID validation", () => {
     // Path traversal attempt
     expect(UUID_REGEX.test("../../../etc/passwd")).toBe(false);
   });
+
+  it("UUID_PATTERN is the regex source string", () => {
+    expect(UUID_PATTERN).toBe(UUID_REGEX.source);
+  });
 });
 
 describe("query request validation rules", () => {
   it("topK bounds are enforced in schema", () => {
-    // These are the bounds defined in the Fastify JSON schema
     const MIN_TOP_K = 1;
     const MAX_TOP_K = 20;
     const MAX_QUESTION_LENGTH = 2000;

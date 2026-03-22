@@ -11,7 +11,7 @@ export const apiConfigSchema = baseSchema.extend({
   ANTHROPIC_API_KEY: z.string().min(1),
   KAFKA_BROKERS: z.string().min(1),
   UPLOAD_DIR: z.string().default("/tmp/uploads"),
-  JWT_SECRET: z.string().min(16, "JWT_SECRET must be at least 16 characters"),
+  JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
   CORS_ORIGINS: z.string().default("http://localhost:3000"),
 });
 

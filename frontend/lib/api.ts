@@ -1,4 +1,7 @@
 // lib/api.ts — typed client for the Direze API
+// Auth is handled via httpOnly cookies set by the API.
+// The NextAuth session provides the token for server-side calls;
+// browser requests use credentials: "include" to send cookies.
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080/api";
 
@@ -19,49 +22,42 @@ export interface QueryResponse {
   sources: string[];
 }
 
-// ── Auth token management ────────────────────────────────────────────────────
+// ── Auth helpers ──────────────────────────────────────────────────────────────
+// Token is stored in NextAuth session and passed via Authorization header.
+// The API also sets an httpOnly cookie as a fallback.
 
 let authToken: string | null = null;
 
 export function setAuthToken(token: string | null): void {
   authToken = token;
-  if (token) {
-    localStorage.setItem("direze_token", token);
-  } else {
-    localStorage.removeItem("direze_token");
-  }
 }
 
 export function getAuthToken(): string | null {
-  if (authToken) return authToken;
-  if (typeof window !== "undefined") {
-    authToken = localStorage.getItem("direze_token");
-  }
   return authToken;
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getAuthToken();
-  if (!token) return {};
-  return { Authorization: `Bearer ${token}` };
+function requestInit(extra?: RequestInit): RequestInit {
+  const headers: Record<string, string> = {};
+  if (authToken) {
+    headers["Authorization"] = `Bearer ${authToken}`;
+  }
+  return {
+    ...extra,
+    credentials: "include" as const,
+    headers: { ...headers, ...(extra?.headers as Record<string, string> ?? {}) },
+  };
 }
 
 // ── Documents ──────────────────────────────────────────────────────────────
 
 export async function listDocuments(): Promise<Document[]> {
-  const res = await fetch(`${BASE}/documents`, {
-    cache: "no-store",
-    headers: authHeaders(),
-  });
+  const res = await fetch(`${BASE}/documents`, requestInit({ cache: "no-store" }));
   if (!res.ok) throw new Error("Failed to fetch documents");
   return res.json();
 }
 
 export async function getDocument(id: string): Promise<Document> {
-  const res = await fetch(`${BASE}/documents/${id}`, {
-    cache: "no-store",
-    headers: authHeaders(),
-  });
+  const res = await fetch(`${BASE}/documents/${id}`, requestInit({ cache: "no-store" }));
   if (!res.ok) throw new Error("Failed to fetch document");
   return res.json();
 }
@@ -69,11 +65,10 @@ export async function getDocument(id: string): Promise<Document> {
 export async function uploadDocument(file: File): Promise<Document> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${BASE}/documents/upload`, {
+  const res = await fetch(`${BASE}/documents/upload`, requestInit({
     method: "POST",
-    headers: authHeaders(),
     body: form,
-  });
+  }));
   if (!res.ok) {
     const err: Record<string, unknown> = await res.json().catch(() => ({}));
     throw new Error(
@@ -84,10 +79,9 @@ export async function uploadDocument(file: File): Promise<Document> {
 }
 
 export async function deleteDocument(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/documents/${id}`, {
+  const res = await fetch(`${BASE}/documents/${id}`, requestInit({
     method: "DELETE",
-    headers: authHeaders(),
-  });
+  }));
   if (!res.ok) throw new Error("Delete failed");
 }
 
@@ -101,11 +95,11 @@ export async function queryDocument(
   const body: Record<string, unknown> = { question, topK };
   if (documentId) body.documentId = documentId;
 
-  const res = await fetch(`${BASE}/query`, {
+  const res = await fetch(`${BASE}/query`, requestInit({
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }));
   if (!res.ok) throw new Error("Query failed");
   return res.json();
 }
@@ -122,10 +116,7 @@ export interface DashboardStats {
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {
-  const res = await fetch(`${BASE}/dashboard/stats`, {
-    cache: "no-store",
-    headers: authHeaders(),
-  });
+  const res = await fetch(`${BASE}/dashboard/stats`, requestInit({ cache: "no-store" }));
   if (!res.ok) throw new Error("Failed to fetch stats");
   return res.json();
 }
@@ -148,11 +139,11 @@ export async function queryDocumentStream(
   const body: Record<string, unknown> = { question, topK };
   if (documentId) body.documentId = documentId;
 
-  const res = await fetch(`${BASE}/query/stream`, {
+  const res = await fetch(`${BASE}/query/stream`, requestInit({
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }));
 
   if (!res.ok) {
     callbacks.onError(new Error("Query failed"));
@@ -183,6 +174,7 @@ export async function queryDocumentStream(
         const event = JSON.parse(json);
         if (event.type === "sources") callbacks.onSources(event.sources);
         else if (event.type === "delta") callbacks.onDelta(event.text);
+        else if (event.type === "error") callbacks.onError(new Error(event.message));
         else if (event.type === "done") callbacks.onDone();
       } catch {
         // Ignore malformed SSE lines

@@ -33,19 +33,22 @@ A production-architecture document Q&A platform. Upload PDFs, ask questions, get
 
 **Key architectural decisions:**
 - Full TypeScript monorepo with shared types and clients
-- JWT authentication on all API routes
-- Rate limiting (100 req/min general, 20 req/min for LLM queries, 10 req/min for uploads)
+- JWT authentication with bcrypt password hashing and httpOnly cookies
+- Security headers via `@fastify/helmet`
+- User isolation — documents and queries are scoped per user with ownership checks
+- Rate limiting (100 req/min general, 20 req/min for LLM queries, 10 req/min for uploads, 5 req/min for registration)
 - Input validation via Fastify JSON Schema (UUID format, body size limits)
 - Upload returns immediately (202 Accepted) — all processing is async through Kafka
 - Consumer uses p-limit for concurrent embedding calls with backpressure
+- File path validation in consumer to prevent path traversal
 - Real PDF text extraction via pdf-parse
 - pgvector for vector storage — no external vector DB required
 - MongoDB stores document metadata + status; aggregation pipelines power the dashboard
 - Consumer commits Kafka offsets only after successful processing (at-least-once semantics)
-- Streaming SSE responses for real-time LLM output in the chat UI
+- Streaming SSE responses with error handling for real-time LLM output in the chat UI
 - Multi-document queries — search across all documents when no specific document is selected
 - Token-aware chunking via js-tiktoken (cl100k_base, matching the embedding model)
-- Dead letter queue (`raw-docs-dlq`) with 3-retry policy before sending to DLQ
+- Dead letter queue (`raw-docs-dlq`) with persistent retry tracking before sending to DLQ
 - NextAuth.js credentials provider on the frontend with session-based auth
 - Dashboard page with aggregation pipeline stats and visual status bar
 - Anthropic Claude for LLM answers, OpenAI for embeddings
@@ -170,13 +173,12 @@ direze/
 
 ## Authentication
 
-The API uses JWT (HS256) for authentication. All `/api/*` routes require a valid `Authorization: Bearer <token>` header. The `/health` endpoint is public.
+The API uses JWT (HS256) with bcrypt password hashing. Tokens are set as httpOnly cookies and also returned in the response body for flexibility.
 
-To generate a token for development, you can use the JWT secret from your `.env`:
-
-```bash
-node -e "const jwt = require('jsonwebtoken'); console.log(jwt.sign({sub:'dev-user'}, process.env.JWT_SECRET, {expiresIn:'24h'}))"
-```
+- `POST /api/auth/register` — create a new account (password min 8 chars, hashed with bcrypt)
+- `POST /api/auth/login` — authenticate and receive a JWT token (1h expiry)
+- All `/api/*` routes (except auth and `/health`) require a valid JWT
+- Documents, queries, and dashboard stats are scoped per user — users can only access their own data
 
 ## Kafka Topics
 

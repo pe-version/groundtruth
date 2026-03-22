@@ -6,19 +6,11 @@ import {
   DocumentStatus,
   type Document,
   type KafkaDocumentEvent,
-  type MongoDB,
-  type VectorStore,
-  type ApiConfig,
+  UUID_REGEX,
 } from "@direze/shared";
-import type { KafkaProducer } from "../services/kafka-producer.js";
-
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function documentRoutes(fastify: FastifyInstance) {
-  const db: MongoDB = (fastify as any).db;
-  const kafkaProducer: KafkaProducer = (fastify as any).kafkaProducer;
-  const config: ApiConfig = (fastify as any).config;
+  const { db, kafkaProducer, config } = fastify;
 
   // Rate limit upload more aggressively
   fastify.post(
@@ -41,6 +33,7 @@ export async function documentRoutes(fastify: FastifyInstance) {
         return reply.code(400).send({ error: "Only PDF files are supported" });
       }
 
+      const userId = request.user.sub;
       const docId = randomUUID();
       const uploadDir = config.UPLOAD_DIR;
       await mkdir(uploadDir, { recursive: true });
@@ -60,6 +53,7 @@ export async function documentRoutes(fastify: FastifyInstance) {
 
       const doc: Document = {
         _id: docId,
+        userId,
         filename: data.filename,
         status: DocumentStatus.Pending,
         chunkCount: 0,
@@ -98,8 +92,9 @@ export async function documentRoutes(fastify: FastifyInstance) {
     }
   );
 
-  fastify.get("/documents", async () => {
-    const docs = await db.listDocuments();
+  fastify.get("/documents", async (request) => {
+    const userId = request.user.sub;
+    const docs = await db.listDocuments(userId);
     return docs.map((d) => ({
       id: d._id,
       filename: d.filename,
@@ -120,7 +115,7 @@ export async function documentRoutes(fastify: FastifyInstance) {
       }
 
       const doc = await db.getDocument(id);
-      if (!doc) {
+      if (!doc || doc.userId !== request.user.sub) {
         return reply.code(404).send({ error: "Document not found" });
       }
 
@@ -144,7 +139,13 @@ export async function documentRoutes(fastify: FastifyInstance) {
         return reply.code(400).send({ error: "Invalid document ID format" });
       }
 
-      const vectorStore: VectorStore = (fastify as any).vectorStore;
+      // Authorization: ensure document belongs to user
+      const doc = await db.getDocument(id);
+      if (!doc || doc.userId !== request.user.sub) {
+        return reply.code(404).send({ error: "Document not found" });
+      }
+
+      const { vectorStore } = fastify;
       await vectorStore.deleteChunks(id);
       await db.deleteDocument(id);
 

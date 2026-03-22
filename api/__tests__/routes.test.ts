@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import jwt from "@fastify/jwt";
+import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import { authRoutes } from "../src/routes/auth.js";
 import { documentRoutes } from "../src/routes/documents.js";
@@ -18,6 +19,8 @@ vi.mock("@direze/shared", async () => {
       Failed: "failed",
     },
     embedText: vi.fn().mockResolvedValue(new Array(1536).fill(0)),
+    UUID_REGEX: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    UUID_PATTERN: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
   };
 });
 
@@ -57,11 +60,12 @@ function createMockKafkaProducer() {
   };
 }
 
-const JWT_SECRET = "test-secret-long-enough-for-jwt";
+const JWT_SECRET = "test-secret-long-enough-for-jwt-32chars!";
 
 async function buildApp() {
   const fastify = Fastify({ logger: false });
 
+  await fastify.register(cookie);
   await fastify.register(jwt, { secret: JWT_SECRET });
   await fastify.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -74,9 +78,9 @@ async function buildApp() {
   fastify.decorate("kafkaProducer", kafkaProducer);
   fastify.decorate("config", { UPLOAD_DIR: "/tmp/test-uploads" });
 
-  // Auth hook — skip /health and /api/auth/login
+  // Auth hook — skip /health and /api/auth/*
   fastify.addHook("onRequest", async (request, reply) => {
-    const publicPaths = ["/health", "/api/auth/login"];
+    const publicPaths = ["/health", "/api/auth/login", "/api/auth/register"];
     if (publicPaths.includes(request.url)) return;
     try {
       await request.jwtVerify();
@@ -93,8 +97,8 @@ async function buildApp() {
   return { fastify, db, vectorStore, kafkaProducer };
 }
 
-function getToken(fastify: FastifyInstance): string {
-  return fastify.jwt.sign({ sub: "test-user" }, { expiresIn: "1h" });
+function getToken(fastify: FastifyInstance, sub = "test-user"): string {
+  return fastify.jwt.sign({ sub }, { expiresIn: "1h" });
 }
 
 // --- Tests ---
@@ -107,32 +111,74 @@ describe("Auth routes", () => {
   });
   afterAll(async () => { await fastify.close(); });
 
-  it("POST /api/auth/login returns a token", async () => {
+  it("POST /api/auth/register creates a user and returns token", async () => {
     const res = await fastify.inject({
       method: "POST",
-      url: "/api/auth/login",
-      payload: { username: "alice", password: "secret123" },
+      url: "/api/auth/register",
+      payload: { username: "alice", password: "secretpass123" },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.token).toBeDefined();
     expect(body.userId).toBe("alice");
+    // Should set httpOnly cookie
+    const cookies = res.cookies;
+    const tokenCookie = cookies.find((c: { name: string }) => c.name === "direze_token");
+    expect(tokenCookie).toBeDefined();
+    expect(tokenCookie?.httpOnly).toBe(true);
   });
 
-  it("POST /api/auth/login rejects missing fields (schema validation)", async () => {
+  it("POST /api/auth/register rejects duplicate username", async () => {
     const res = await fastify.inject({
       method: "POST",
-      url: "/api/auth/login",
-      payload: { username: "alice" },
+      url: "/api/auth/register",
+      payload: { username: "alice", password: "anotherpass123" },
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it("POST /api/auth/register rejects short password", async () => {
+    const res = await fastify.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: { username: "bob", password: "short" },
     });
     expect(res.statusCode).toBe(400);
   });
 
-  it("POST /api/auth/login rejects empty username", async () => {
+  it("POST /api/auth/login succeeds with correct credentials", async () => {
     const res = await fastify.inject({
       method: "POST",
       url: "/api/auth/login",
-      payload: { username: "", password: "pass" },
+      payload: { username: "alice", password: "secretpass123" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().token).toBeDefined();
+  });
+
+  it("POST /api/auth/login rejects wrong password", async () => {
+    const res = await fastify.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "alice", password: "wrongpassword" },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("POST /api/auth/login rejects non-existent user", async () => {
+    const res = await fastify.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "nobody", password: "password123" },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("POST /api/auth/login rejects missing fields", async () => {
+    const res = await fastify.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "alice" },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -178,17 +224,17 @@ describe("Document routes", () => {
   let fastify: FastifyInstance;
   let db: ReturnType<typeof createMockDb>;
   let vectorStore: ReturnType<typeof createMockVectorStore>;
-  let kafkaProducer: ReturnType<typeof createMockKafkaProducer>;
 
   beforeAll(async () => {
-    ({ fastify, db, vectorStore, kafkaProducer } = await buildApp());
+    ({ fastify, db, vectorStore } = await buildApp());
   });
   afterAll(async () => { await fastify.close(); });
 
-  it("GET /api/documents returns list", async () => {
+  it("GET /api/documents returns list scoped to user", async () => {
     db.listDocuments.mockResolvedValueOnce([
       {
         _id: "550e8400-e29b-41d4-a716-446655440000",
+        userId: "test-user",
         filename: "test.pdf",
         status: "ready",
         chunkCount: 5,
@@ -207,8 +253,9 @@ describe("Document routes", () => {
     const body = res.json();
     expect(body).toHaveLength(1);
     expect(body[0].id).toBe("550e8400-e29b-41d4-a716-446655440000");
-    expect(body[0].filename).toBe("test.pdf");
-    // Ensure _id is mapped to id (no _id in response)
+    // listDocuments should be called with the user's ID
+    expect(db.listDocuments).toHaveBeenCalledWith("test-user");
+    // Ensure _id is mapped to id
     expect(body[0]._id).toBeUndefined();
   });
 
@@ -224,6 +271,24 @@ describe("Document routes", () => {
 
   it("GET /api/documents/:id returns 404 for missing document", async () => {
     db.getDocument.mockResolvedValueOnce(null);
+    const res = await fastify.inject({
+      method: "GET",
+      url: "/api/documents/550e8400-e29b-41d4-a716-446655440000",
+      headers: { authorization: `Bearer ${getToken(fastify)}` },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("GET /api/documents/:id returns 404 if document belongs to another user", async () => {
+    db.getDocument.mockResolvedValueOnce({
+      _id: "550e8400-e29b-41d4-a716-446655440000",
+      userId: "other-user",
+      filename: "test.pdf",
+      status: "ready",
+      chunkCount: 5,
+      uploadedAt: new Date(),
+      updatedAt: new Date(),
+    });
 
     const res = await fastify.inject({
       method: "GET",
@@ -233,9 +298,10 @@ describe("Document routes", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("GET /api/documents/:id returns document", async () => {
+  it("GET /api/documents/:id returns document owned by user", async () => {
     db.getDocument.mockResolvedValueOnce({
       _id: "550e8400-e29b-41d4-a716-446655440000",
+      userId: "test-user",
       filename: "test.pdf",
       status: "ready",
       chunkCount: 5,
@@ -252,8 +318,31 @@ describe("Document routes", () => {
     expect(res.json().id).toBe("550e8400-e29b-41d4-a716-446655440000");
   });
 
-  it("DELETE /api/documents/:id deletes chunks, document, and returns 204", async () => {
+  it("DELETE /api/documents/:id requires ownership", async () => {
+    db.getDocument.mockResolvedValueOnce({
+      _id: "550e8400-e29b-41d4-a716-446655440000",
+      userId: "other-user",
+      filename: "test.pdf",
+      status: "ready",
+    });
+
+    const res = await fastify.inject({
+      method: "DELETE",
+      url: "/api/documents/550e8400-e29b-41d4-a716-446655440000",
+      headers: { authorization: `Bearer ${getToken(fastify)}` },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("DELETE /api/documents/:id deletes owned document", async () => {
     const id = "550e8400-e29b-41d4-a716-446655440000";
+    db.getDocument.mockResolvedValueOnce({
+      _id: id,
+      userId: "test-user",
+      filename: "test.pdf",
+      status: "ready",
+    });
+
     const res = await fastify.inject({
       method: "DELETE",
       url: `/api/documents/${id}`,
@@ -276,14 +365,21 @@ describe("Document routes", () => {
 
 describe("Query routes", () => {
   let fastify: FastifyInstance;
+  let db: ReturnType<typeof createMockDb>;
   let vectorStore: ReturnType<typeof createMockVectorStore>;
 
   beforeAll(async () => {
-    ({ fastify, vectorStore } = await buildApp());
+    ({ fastify, db, vectorStore } = await buildApp());
   });
   afterAll(async () => { await fastify.close(); });
 
   it("POST /api/query returns answer with sources", async () => {
+    db.getDocument.mockResolvedValueOnce({
+      _id: "550e8400-e29b-41d4-a716-446655440000",
+      userId: "test-user",
+      filename: "test.pdf",
+      status: "ready",
+    });
     vectorStore.similarChunks.mockResolvedValueOnce([
       { id: "1", documentId: "abc", content: "Some relevant content", chunkIndex: 0, score: 0.9 },
     ]);
@@ -301,6 +397,24 @@ describe("Query routes", () => {
     const body = res.json();
     expect(body.answer).toBe("Hello world");
     expect(body.sources).toHaveLength(1);
+  });
+
+  it("POST /api/query returns 404 for unowned document", async () => {
+    db.getDocument.mockResolvedValueOnce({
+      _id: "550e8400-e29b-41d4-a716-446655440000",
+      userId: "other-user",
+    });
+
+    const res = await fastify.inject({
+      method: "POST",
+      url: "/api/query",
+      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      payload: {
+        documentId: "550e8400-e29b-41d4-a716-446655440000",
+        question: "test?",
+      },
+    });
+    expect(res.statusCode).toBe(404);
   });
 
   it("POST /api/query returns fallback when no chunks found", async () => {
@@ -372,7 +486,7 @@ describe("Dashboard routes", () => {
   });
   afterAll(async () => { await fastify.close(); });
 
-  it("GET /api/dashboard/stats returns summary", async () => {
+  it("GET /api/dashboard/stats returns user-scoped summary", async () => {
     db.getStatusSummary.mockResolvedValueOnce([
       { status: "ready", count: 5 },
       { status: "pending", count: 2 },
@@ -391,6 +505,8 @@ describe("Dashboard routes", () => {
     expect(body.pending).toBe(2);
     expect(body.failed).toBe(1);
     expect(body.processing).toBe(0);
+    // Should be called with user ID
+    expect(db.getStatusSummary).toHaveBeenCalledWith("test-user");
   });
 
   it("GET /api/dashboard/stats returns zeros when empty", async () => {

@@ -3,6 +3,8 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import multipart from "@fastify/multipart";
 import jwt from "@fastify/jwt";
+import helmet from "@fastify/helmet";
+import cookie from "@fastify/cookie";
 import { loadApiConfig, MongoDB, VectorStore } from "@direze/shared";
 import { documentRoutes } from "./routes/documents.js";
 import { queryRoutes } from "./routes/query.js";
@@ -21,10 +23,17 @@ async function main() {
 
   // --- Plugins -----------------------------------------------------------
 
+  await fastify.register(helmet, {
+    contentSecurityPolicy: false, // frontend served separately
+  });
+
+  await fastify.register(cookie);
+
   await fastify.register(cors, {
     origin: config.CORS_ORIGINS.split(",").map((o) => o.trim()),
     methods: ["GET", "POST", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
   });
 
   await fastify.register(rateLimit, {
@@ -34,6 +43,10 @@ async function main() {
 
   await fastify.register(jwt, {
     secret: config.JWT_SECRET,
+    cookie: {
+      cookieName: "direze_token",
+      signed: false,
+    },
   });
 
   await fastify.register(multipart, {
@@ -54,10 +67,10 @@ async function main() {
   fastify.decorate("kafkaProducer", kafkaProducer);
   fastify.decorate("config", config);
 
-  // --- Auth hook (skip /health) -------------------------------------------
+  // --- Auth hook (skip /health and /api/auth/*) ----------------------------
 
   fastify.addHook("onRequest", async (request, reply) => {
-    const publicPaths = ["/health", "/api/auth/login"];
+    const publicPaths = ["/health", "/api/auth/login", "/api/auth/register"];
     if (publicPaths.includes(request.url)) return;
     try {
       await request.jwtVerify();
@@ -78,10 +91,10 @@ async function main() {
 
   const shutdown = async () => {
     fastify.log.info("Shutting down...");
-    await fastify.close();
-    await kafkaProducer.disconnect();
-    await vectorStore.close();
-    await db.disconnect();
+    try { await fastify.close(); } catch (err) { fastify.log.error(err, "Error closing Fastify"); }
+    try { await kafkaProducer.disconnect(); } catch (err) { fastify.log.error(err, "Error disconnecting Kafka"); }
+    try { await vectorStore.close(); } catch (err) { fastify.log.error(err, "Error closing VectorStore"); }
+    try { await db.disconnect(); } catch (err) { fastify.log.error(err, "Error disconnecting MongoDB"); }
     process.exit(0);
   };
 

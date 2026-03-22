@@ -8,7 +8,7 @@ describe("apiConfigSchema", () => {
     OPENAI_API_KEY: "sk-test-key-12345",
     ANTHROPIC_API_KEY: "sk-ant-test-key-12345",
     KAFKA_BROKERS: "localhost:9092",
-    JWT_SECRET: "this-is-a-long-enough-secret",
+    JWT_SECRET: "this-is-a-long-enough-secret-for-32-chars!!",
   };
 
   it("parses valid config with defaults", () => {
@@ -25,7 +25,7 @@ describe("apiConfigSchema", () => {
   it("rejects short JWT_SECRET", () => {
     expect(() =>
       apiConfigSchema.parse({ ...validEnv, JWT_SECRET: "short" })
-    ).toThrow("at least 16 characters");
+    ).toThrow("at least 32 characters");
   });
 
   it("coerces PORT to number", () => {
