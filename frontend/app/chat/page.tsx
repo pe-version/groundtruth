@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
+import ReactMarkdown from "react-markdown";
 import { queryDocumentStream } from "@/lib/api";
 import { Send, ArrowLeft, ChevronDown, ChevronUp, Bot, User } from "lucide-react";
 
@@ -11,6 +12,12 @@ interface Message {
   content: string;
   sources?: string[];
 }
+
+const EXAMPLE_QUESTIONS = [
+  "Summarize this document",
+  "What are the key points?",
+  "What dates or deadlines are mentioned?",
+];
 
 function ChatInterface() {
   const params = useSearchParams();
@@ -119,11 +126,22 @@ function ChatInterface() {
         {messages.length === 0 && (
           <div className="text-center text-gray-600 pt-16">
             <Bot className="w-10 h-10 mx-auto mb-3 opacity-40" />
-            <p>
+            <p className="mb-6">
               {docId
                 ? <>Ask a question about <span className="text-gray-400">{filename}</span></>
                 : <>Ask a question across <span className="text-gray-400">all documents</span></>}
             </p>
+            <div className="flex flex-wrap justify-center gap-2">
+              {EXAMPLE_QUESTIONS.map((q) => (
+                <button
+                  key={q}
+                  onClick={() => setInput(q)}
+                  className="px-3 py-1.5 text-sm rounded-lg border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500 transition-colors"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -137,11 +155,17 @@ function ChatInterface() {
             </div>
 
             <div className={`max-w-[80%] ${msg.role === "user" ? "items-end" : "items-start"} flex flex-col gap-1`}>
-              <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap
+              <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed
                 ${msg.role === "user"
-                  ? "bg-indigo-600 text-white rounded-tr-sm"
-                  : "bg-gray-800 text-gray-100 rounded-tl-sm"}`}>
-                {msg.content || (loading && msg.role === "assistant" ? (
+                  ? "bg-indigo-600 text-white rounded-tr-sm whitespace-pre-wrap"
+                  : "bg-gray-800 text-gray-100 rounded-tl-sm prose prose-invert prose-sm max-w-none"}`}>
+                {msg.content ? (
+                  msg.role === "assistant" ? (
+                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                  ) : (
+                    msg.content
+                  )
+                ) : (loading && msg.role === "assistant" ? (
                   <div className="flex gap-1">
                     {[0, 1, 2].map((j) => (
                       <span key={j} className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce"
@@ -151,14 +175,14 @@ function ChatInterface() {
                 ) : null)}
               </div>
 
-              {/* Source excerpts (collapsible) */}
+              {/* Source passages (collapsible) */}
               {msg.sources && msg.sources.length > 0 && (
                 <button
                   onClick={() => setExpandedSources(expandedSources === i ? null : i)}
                   className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors ml-1"
                 >
                   {expandedSources === i ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                  {msg.sources.length} source excerpt{msg.sources.length > 1 ? "s" : ""}
+                  See relevant passages ({msg.sources.length})
                 </button>
               )}
 
@@ -186,7 +210,7 @@ function ChatInterface() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Ask a question… (Enter to send, Shift+Enter for newline)"
+            placeholder="Ask a question about your document..."
             rows={1}
             className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm
               resize-none focus:outline-none focus:border-indigo-500 transition-colors

@@ -48,17 +48,25 @@ function requestInit(extra?: RequestInit): RequestInit {
   };
 }
 
+function checkRateLimit(res: Response): void {
+  if (res.status === 429) {
+    throw new Error("Too many requests. Please wait a moment and try again.");
+  }
+}
+
 // ── Documents ──────────────────────────────────────────────────────────────
 
 export async function listDocuments(): Promise<Document[]> {
   const res = await fetch(`${BASE}/documents`, requestInit({ cache: "no-store" }));
-  if (!res.ok) throw new Error("Failed to fetch documents");
+  checkRateLimit(res);
+  if (!res.ok) throw new Error(`Failed to fetch documents (${res.status})`);
   return res.json();
 }
 
 export async function getDocument(id: string): Promise<Document> {
   const res = await fetch(`${BASE}/documents/${id}`, requestInit({ cache: "no-store" }));
-  if (!res.ok) throw new Error("Failed to fetch document");
+  checkRateLimit(res);
+  if (!res.ok) throw new Error(`Failed to fetch document (${res.status})`);
   return res.json();
 }
 
@@ -69,6 +77,7 @@ export async function uploadDocument(file: File): Promise<Document> {
     method: "POST",
     body: form,
   }));
+  checkRateLimit(res);
   if (!res.ok) {
     const err: Record<string, unknown> = await res.json().catch(() => ({}));
     throw new Error(
@@ -82,6 +91,7 @@ export async function deleteDocument(id: string): Promise<void> {
   const res = await fetch(`${BASE}/documents/${id}`, requestInit({
     method: "DELETE",
   }));
+  checkRateLimit(res);
   if (!res.ok) throw new Error("Delete failed");
 }
 
@@ -100,6 +110,7 @@ export async function queryDocument(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }));
+  checkRateLimit(res);
   if (!res.ok) throw new Error("Query failed");
   return res.json();
 }
@@ -117,6 +128,7 @@ export interface DashboardStats {
 
 export async function getDashboardStats(): Promise<DashboardStats> {
   const res = await fetch(`${BASE}/dashboard/stats`, requestInit({ cache: "no-store" }));
+  checkRateLimit(res);
   if (!res.ok) throw new Error("Failed to fetch stats");
   return res.json();
 }
@@ -144,6 +156,11 @@ export async function queryDocumentStream(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }));
+
+  if (res.status === 429) {
+    callbacks.onError(new Error("Too many requests. Please wait a moment and try again."));
+    return;
+  }
 
   if (!res.ok) {
     callbacks.onError(new Error("Query failed"));

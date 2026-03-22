@@ -15,7 +15,7 @@ export default function UploadPage() {
 
   const handleFile = useCallback(
     async (file: File) => {
-      if (!file.name.endsWith(".pdf")) {
+      if (!file.name.toLowerCase().endsWith(".pdf")) {
         setErrorMsg("Only PDF files are supported.");
         setState("error");
         return;
@@ -51,7 +51,7 @@ export default function UploadPage() {
       <div className="w-full max-w-xl">
         <h1 className="text-3xl font-bold mb-2">Upload a Document</h1>
         <p className="text-gray-400 mb-8">
-          PDF files are chunked, embedded, and indexed asynchronously.
+          Upload a PDF and we&apos;ll prepare it so you can ask questions about it. This usually takes a minute or two.
         </p>
 
         {/* Drop zone */}
