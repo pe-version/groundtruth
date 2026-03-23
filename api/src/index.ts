@@ -70,7 +70,7 @@ async function main() {
   // --- Auth hook (skip /health and /api/auth/*) ----------------------------
 
   fastify.addHook("onRequest", async (request, reply) => {
-    const publicPaths = ["/health", "/api/auth/login", "/api/auth/register"];
+    const publicPaths = ["/health", "/api/auth/login", "/api/auth/register", "/api/auth/oauth-token"];
     if (publicPaths.includes(request.url)) return;
     try {
       await request.jwtVerify();

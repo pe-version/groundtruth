@@ -51,7 +51,8 @@ export interface JwtPayload {
 }
 
 export interface User {
-  _id: string;       // username
-  passwordHash: string;
+  _id: string;            // username (or "provider:id" for OAuth users)
+  passwordHash: string;   // empty string for OAuth-only users
+  oauthProvider?: string; // e.g. "github" — set for OAuth-provisioned accounts
   createdAt: Date;
 }

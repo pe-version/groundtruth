@@ -41,6 +41,22 @@ export class MongoDB {
     return this.users.findOne({ _id: username } as any) as Promise<User | null>;
   }
 
+  // Idempotent upsert for OAuth-provisioned users. No password is stored —
+  // these accounts can only be accessed via the oauth-token endpoint.
+  async upsertOAuthUser(userId: string, provider: string): Promise<void> {
+    await this.users.updateOne(
+      { _id: userId } as any,
+      {
+        $setOnInsert: {
+          passwordHash: "",
+          oauthProvider: provider,
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+  }
+
   // ── Documents ───────────────────────────────────────────────────────────────
 
   async insertDocument(doc: Document): Promise<void> {

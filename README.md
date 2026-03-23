@@ -194,15 +194,36 @@ Auth uses a unified approach: the API issues JWTs (HS256) backed by MongoDB user
 4. Next.js `middleware.ts` redirects unauthenticated users to `/login` before any page renders
 
 **GitHub OAuth flow (optional):**
-1. Set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `OAUTH_PROVISION_SECRET` in `.env`
-2. On first GitHub login, the NextAuth callback auto-provisions a MongoDB user using the GitHub user ID as the username
-3. Subsequent logins re-authenticate against that provisioned account and receive a fresh API JWT
+1. Set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `OAUTH_SERVER_SECRET` in `.env`
+2. After GitHub confirms the OAuth login, NextAuth's server-side JWT callback calls `POST /api/auth/oauth-token` — a server-to-server endpoint that never passes through the browser
+3. The API verifies `OAUTH_SERVER_SECRET` (timing-safe comparison), upserts the user in MongoDB with an empty `passwordHash`, and returns a standard JWT
+4. NextAuth stores that JWT in the session; all subsequent requests are indistinguishable from a credentials login
 
 **Endpoints:**
 - `POST /api/auth/register` — create account (min 8-char password, bcrypt, 5 req/min)
 - `POST /api/auth/login` — validate credentials, receive JWT (10 req/min)
-- All `/api/*` routes (except auth and `/health`) require a valid JWT
+- `POST /api/auth/oauth-token` — server-to-server only; requires `OAUTH_SERVER_SECRET` (30 req/min)
+- All other `/api/*` routes (except `/health`) require a valid JWT
 - Documents, queries, and dashboard stats are scoped per user
+
+### ADR: OAuth provisioning via dedicated server-to-server endpoint
+
+**Decision:** OAuth users are provisioned and issued JWTs through a dedicated `/api/auth/oauth-token` endpoint authenticated by a shared `OAUTH_SERVER_SECRET`, rather than storing a per-user or shared password.
+
+**Context:** After a GitHub OAuth login, NextAuth holds a verified OAuth identity but the Fastify API only understands JWTs it issued itself. We need to bridge them. Three approaches were considered:
+
+| Approach | How it works | Why rejected |
+|---|---|---|
+| Shared `OAUTH_PROVISION_SECRET` as password | All OAuth users share one password. NextAuth calls `/auth/register` then `/auth/login` using this secret. | The secret is deterministic per user or global. If leaked, any attacker knowing a valid OAuth `userId` (predictable: `github:<numericId>`) can call `/auth/login` directly and receive a valid JWT — no OAuth required. |
+| Per-user random password stored in MongoDB | Generate a random password at provision time, store alongside the hash, retrieve it for subsequent logins. | Requires a privileged "get password" API call, creating a new attack surface. Any endpoint that returns a value usable to authenticate has the same exposure as the secret itself. Also mixes credential and OAuth identity models unnecessarily. |
+| **Dedicated `oauth-token` endpoint with server secret** | NextAuth server presents `OAUTH_SERVER_SECRET` to receive a JWT. OAuth users have no `passwordHash`; `/auth/login` cannot issue them a token. | **Chosen.** The secret never touches the browser. OAuth users cannot be impersonated via `/auth/login` even if their `userId` is known — the only authentication path requires the server secret. |
+
+**Security properties of the chosen design:**
+- `OAUTH_SERVER_SECRET` is a server-side environment variable on both the API and the Next.js server. It is never sent to or readable by the browser.
+- OAuth-provisioned users have `passwordHash: ""`. `bcrypt.compare(anything, "")` returns false, so `/auth/login` is categorically closed to them.
+- The endpoint uses `timingSafeEqual` for secret comparison, preventing timing-based enumeration.
+- The endpoint is rate-limited to 30 req/min — well above legitimate traffic (one call per OAuth login) but low enough to make brute-force impractical.
+- If `OAUTH_SERVER_SECRET` is not configured, the endpoint returns 503. OAuth login is unavailable rather than falling back to an insecure path.
 
 ## Kafka Topics
 
@@ -235,7 +256,7 @@ The architecture is intentionally production-shaped, but several gaps remain bef
 
 ### Auth & Identity
 - **Token refresh** — Tokens expire after 1h with no refresh mechanism. Users are silently logged out mid-session. Implement refresh tokens (stored in MongoDB with a `revoked` flag) or use short-lived access tokens with longer-lived refresh tokens.
-- **OAuth provisioning secret** — The `OAUTH_PROVISION_SECRET` used to register GitHub users on first login is a shared secret. A stronger approach: generate a random password per user on first OAuth login and store it in MongoDB rather than deriving it from a shared env var.
+- **OAuth provisioning secret** — Implemented via a dedicated server-to-server `oauth-token` endpoint. OAuth users have no stored password; `/auth/login` cannot issue them a token. See ADR in README § Authentication.
 - **Password reset** — No recovery path if a user forgets their password. Requires email infrastructure (SMTP or transactional email service like Resend or SendGrid).
 - **Email verification** — Accounts are created without verifying the username is a real identity. Add email-as-username with a verification flow to prevent account squatting.
 - **Session revocation** — JWTs are stateless; a signed-out token remains valid until expiry. For true revocation, maintain a token denylist in Redis or MongoDB with TTL matching token expiry.
@@ -286,7 +307,7 @@ The architecture is intentionally production-shaped, but several gaps remain bef
 - [x] bcrypt password hashing + httpOnly cookie auth
 - [x] User isolation — per-user document scoping with ownership checks
 - [x] MongoDB-backed user store (replaces in-memory Map)
-- [x] GitHub OAuth via NextAuth.js (optional, zero-config if env vars absent)
+- [x] GitHub OAuth via NextAuth.js with secure server-to-server provisioning
 - [x] Route protection via Next.js middleware
 - [x] Registration page + login/register linking
 - [x] Shared nav bar + sign-out

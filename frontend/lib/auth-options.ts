@@ -58,30 +58,22 @@ export const authOptions: NextAuthOptions = {
           token.accessToken = (user as { accessToken?: string }).accessToken;
         }
       }
-      // For OAuth providers: exchange the OAuth identity for an API token.
-      if (account?.provider === "github" && !token.accessToken) {
-        const userId = `github:${token.sub}`;
-        token.sub = userId;
-        // Auto-provision via register (409 on duplicate is fine — user already exists).
-        await fetch(`${API_URL}/api/auth/register`, {
+      // For OAuth providers: exchange the OAuth identity for an API JWT via the
+      // server-to-server oauth-token endpoint. OAUTH_SERVER_SECRET authenticates
+      // this call — it never passes through the browser.
+      if (account?.provider && token.sub && !token.accessToken) {
+        const oauthRes = await fetch(`${API_URL}/api/auth/oauth-token`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            username: userId,
-            password: process.env.OAUTH_PROVISION_SECRET ?? token.sub,
-          }),
-        }).catch(() => {});
-
-        const loginRes = await fetch(`${API_URL}/api/auth/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            username: userId,
-            password: process.env.OAUTH_PROVISION_SECRET ?? token.sub,
+            provider: account.provider,
+            providerId: token.sub,
+            secret: process.env.OAUTH_SERVER_SECRET ?? "",
           }),
         });
-        if (loginRes.ok) {
-          const data = await loginRes.json();
+        if (oauthRes.ok) {
+          const data = await oauthRes.json();
+          token.sub = data.userId;
           token.accessToken = data.token;
         }
       }
