@@ -3,12 +3,8 @@ import type { FastifyInstance } from "fastify";
 
 const SALT_ROUNDS = 10;
 
-// In-memory user store for development.
-// In production, replace with a database-backed store.
-const users = new Map<string, { passwordHash: string }>();
-
 export async function authRoutes(fastify: FastifyInstance) {
-  // Register endpoint — creates a new user with hashed password.
+  // Register endpoint — creates a new user with hashed password stored in MongoDB.
   fastify.post<{ Body: { username: string; password: string } }>(
     "/auth/register",
     {
@@ -29,12 +25,13 @@ export async function authRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { username, password } = request.body;
 
-      if (users.has(username)) {
+      const existing = await fastify.db.getUser(username);
+      if (existing) {
         return reply.code(409).send({ error: "User already exists" });
       }
 
       const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-      users.set(username, { passwordHash });
+      await fastify.db.createUser(username, passwordHash);
 
       const token = fastify.jwt.sign({ sub: username }, { expiresIn: "1h" });
 
@@ -50,7 +47,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // Login endpoint — validates credentials and returns JWT.
+  // Login endpoint — validates credentials against MongoDB and returns JWT.
   fastify.post<{ Body: { username: string; password: string } }>(
     "/auth/login",
     {
@@ -71,7 +68,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { username, password } = request.body;
 
-      const user = users.get(username);
+      const user = await fastify.db.getUser(username);
       if (!user) {
         return reply.code(401).send({ error: "Invalid credentials" });
       }

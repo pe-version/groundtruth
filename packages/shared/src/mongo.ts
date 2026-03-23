@@ -1,16 +1,19 @@
-import { MongoClient, Collection, type WithId } from "mongodb";
-import { DocumentStatus, type Document } from "./types.js";
+import { MongoClient, Collection } from "mongodb";
+import { DocumentStatus, type Document, type User } from "./types.js";
 
 const DB_NAME = "direze";
 const COLLECTION = "documents";
+const USERS_COLLECTION = "users";
 
 export class MongoDB {
   private client: MongoClient;
   private docs: Collection<Document>;
+  private users: Collection<User>;
 
   constructor(client: MongoClient) {
     this.client = client;
     this.docs = client.db(DB_NAME).collection<Document>(COLLECTION);
+    this.users = client.db(DB_NAME).collection<User>(USERS_COLLECTION);
   }
 
   static async connect(uri: string): Promise<MongoDB> {
@@ -23,6 +26,22 @@ export class MongoDB {
   async disconnect(): Promise<void> {
     await this.client.close();
   }
+
+  // ── User store ──────────────────────────────────────────────────────────────
+
+  async createUser(username: string, passwordHash: string): Promise<void> {
+    await this.users.insertOne({
+      _id: username,
+      passwordHash,
+      createdAt: new Date(),
+    } as any);
+  }
+
+  async getUser(username: string): Promise<User | null> {
+    return this.users.findOne({ _id: username } as any) as Promise<User | null>;
+  }
+
+  // ── Documents ───────────────────────────────────────────────────────────────
 
   async insertDocument(doc: Document): Promise<void> {
     await this.docs.insertOne(doc as any);

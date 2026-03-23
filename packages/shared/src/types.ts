@@ -49,3 +49,9 @@ export interface JwtPayload {
   iat: number;
   exp: number;
 }
+
+export interface User {
+  _id: string;       // username
+  passwordHash: string;
+  createdAt: Date;
+}
