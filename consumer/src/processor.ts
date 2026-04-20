@@ -1,5 +1,4 @@
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 import pLimit from "p-limit";
 import { encodingForModel } from "js-tiktoken";
 import {
@@ -8,6 +7,7 @@ import {
   type MongoDB,
   type VectorStore,
   embedText,
+  getUploadPath,
 } from "@direze/shared";
 import { extractTextFromPDF } from "./pdf-extract.js";
 
@@ -22,19 +22,13 @@ export async function processDocument(
   event: KafkaDocumentEvent,
   db: MongoDB,
   vectorStore: VectorStore,
-  uploadDir?: string
+  uploadDir: string
 ): Promise<number> {
-  // Validate file path to prevent path traversal
-  if (uploadDir) {
-    const realFilePath = path.resolve(event.filePath);
-    const realUploadDir = path.resolve(uploadDir);
-    if (!realFilePath.startsWith(realUploadDir + path.sep) && realFilePath !== realUploadDir) {
-      throw new Error(`Invalid file path: ${event.filePath} is outside upload directory`);
-    }
-  }
+  // File path is derived from documentId, never trusted from the event.
+  const filePath = getUploadPath(uploadDir, event.documentId);
 
   // 1. Read file
-  const buffer = await readFile(event.filePath);
+  const buffer = await readFile(filePath);
 
   // 2. Extract text
   const text = await extractTextFromPDF(buffer);
@@ -59,7 +53,13 @@ export async function processDocument(
 
   // 5. Write to pgvector
   for (const { index, content, embedding } of embeddings) {
-    await vectorStore.insertChunk(event.documentId, index, content, embedding);
+    await vectorStore.insertChunk(
+      event.userId,
+      event.documentId,
+      index,
+      content,
+      embedding
+    );
   }
 
   return chunks.length;

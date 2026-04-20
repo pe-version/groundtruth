@@ -9,8 +9,6 @@ import {
 import { processDocument } from "./processor.js";
 import { DeadLetterQueue } from "./dlq.js";
 
-const MAX_RETRIES = 3;
-
 async function main() {
   const config = loadConsumerConfig();
 
@@ -64,54 +62,42 @@ async function main() {
       );
       await db.updateStatus(event.documentId, DocumentStatus.Processing, 0);
 
-      // Retrieve retry count from the document's current state in MongoDB
-      const existingDoc = await db.getDocument(event.documentId);
-      const previousRetries = existingDoc?.errorMsg
-        ? parseInt(existingDoc.errorMsg.match(/attempt (\d+)/)?.[1] ?? "0", 10)
-        : 0;
+      // Periodic heartbeat to prevent rebalancing during long processing.
+      const heartbeatInterval = setInterval(() => {
+        heartbeat().catch(() => {});
+      }, 5000);
 
       try {
-        // Periodic heartbeat to prevent rebalancing during long processing
-        const heartbeatInterval = setInterval(() => {
-          heartbeat().catch(() => {});
-        }, 5000);
-
-        try {
-          const chunkCount = await processDocument(event, db, vectorStore, config.UPLOAD_DIR);
-          await db.updateStatus(
-            event.documentId,
-            DocumentStatus.Ready,
-            chunkCount
-          );
-          console.log(
-            `Done: ${event.documentId} — ${chunkCount} chunks indexed`
-          );
-        } finally {
-          clearInterval(heartbeatInterval);
-        }
+        const chunkCount = await processDocument(
+          event,
+          db,
+          vectorStore,
+          config.UPLOAD_DIR
+        );
+        await db.updateStatus(
+          event.documentId,
+          DocumentStatus.Ready,
+          chunkCount
+        );
+        console.log(
+          `Done: ${event.documentId} — ${chunkCount} chunks indexed`
+        );
       } catch (err) {
-        const retries = previousRetries + 1;
+        // DLQ-on-first-failure: no in-process retries. Users recover by
+        // re-uploading. The DLQ preserves the original message for operator
+        // inspection and manual replay.
         const error = err instanceof Error ? err : new Error(String(err));
-
-        if (retries >= MAX_RETRIES) {
-          console.error(
-            `Document ${event.documentId} failed after ${MAX_RETRIES} retries — sending to DLQ`
-          );
-          await db.markFailed(
-            event.documentId,
-            `Failed after ${MAX_RETRIES} retries: ${error.message}`
-          );
-          await dlq.send(
-            { key: message.key?.toString(), value, topic, partition, offset: message.offset },
-            error
-          );
-        } else {
-          console.error(
-            `Error processing ${event.documentId} (attempt ${retries}/${MAX_RETRIES}):`,
-            error.message
-          );
-          await db.markFailed(event.documentId, `attempt ${retries}: ${error.message}`);
-        }
+        console.error(
+          `Error processing ${event.documentId} — sending to DLQ:`,
+          error.message
+        );
+        await db.markFailed(event.documentId, error.message);
+        await dlq.send(
+          { key: message.key?.toString(), value, topic, partition, offset: message.offset },
+          error
+        );
+      } finally {
+        clearInterval(heartbeatInterval);
       }
 
       await commitOffset(consumer, topic, partition, message.offset);

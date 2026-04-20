@@ -32,6 +32,7 @@ vi.mock("../src/services/anthropic.js", () => ({
 }));
 
 function createMockDb() {
+  const users = new Map<string, { _id: string; passwordHash: string; oauthProvider?: string; createdAt: Date }>();
   return {
     insertDocument: vi.fn().mockResolvedValue(undefined),
     getDocument: vi.fn().mockResolvedValue(null),
@@ -40,6 +41,15 @@ function createMockDb() {
     markFailed: vi.fn().mockResolvedValue(undefined),
     deleteDocument: vi.fn().mockResolvedValue(undefined),
     getStatusSummary: vi.fn().mockResolvedValue([]),
+    getUser: vi.fn(async (username: string) => users.get(username) ?? null),
+    createUser: vi.fn(async (username: string, passwordHash: string) => {
+      users.set(username, { _id: username, passwordHash, createdAt: new Date() });
+    }),
+    upsertOAuthUser: vi.fn(async (userId: string, provider: string) => {
+      if (!users.has(userId)) {
+        users.set(userId, { _id: userId, passwordHash: "", oauthProvider: provider, createdAt: new Date() });
+      }
+    }),
   };
 }
 
@@ -78,14 +88,17 @@ async function buildApp() {
   fastify.decorate("kafkaProducer", kafkaProducer);
   fastify.decorate("config", { UPLOAD_DIR: "/tmp/test-uploads" });
 
-  // Auth hook — skip /health and /api/auth/*
+  // Auth hook — mirrors prod (api/src/index.ts). Routes opt out via
+  // config.public = true on the route definition.
   fastify.addHook("onRequest", async (request, reply) => {
-    const publicPaths = ["/health", "/api/auth/login", "/api/auth/register"];
-    if (publicPaths.includes(request.url)) return;
+    if (request.routeOptions?.config?.public) return;
     try {
       await request.jwtVerify();
     } catch {
-      reply.code(401).send({ error: "Unauthorized" });
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    if (!request.user?.sub || typeof request.user.sub !== "string") {
+      return reply.code(401).send({ error: "Unauthorized" });
     }
   });
 
@@ -218,6 +231,38 @@ describe("JWT auth middleware", () => {
     });
     expect(res.statusCode).toBe(200);
   });
+
+  it("rejects JWT with empty sub", async () => {
+    const token = fastify.jwt.sign({ sub: "" }, { expiresIn: "1h" });
+    const res = await fastify.inject({
+      method: "GET",
+      url: "/api/documents",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("accepts request with query string on protected route (no URL-string bypass)", async () => {
+    const token = getToken(fastify);
+    const res = await fastify.inject({
+      method: "GET",
+      url: "/api/documents?foo=bar",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("skips JWT for public routes (register without auth header)", async () => {
+    // Register is marked public — a call with no Authorization header must not
+    // be blocked by the auth hook (it should reach the handler, returning
+    // 200/409/400 depending on payload, but never 401 from the hook).
+    const res = await fastify.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: { username: "public-check-user", password: "secretpass123" },
+    });
+    expect([200, 409]).toContain(res.statusCode);
+  });
 });
 
 describe("Document routes", () => {
@@ -349,7 +394,7 @@ describe("Document routes", () => {
       headers: { authorization: `Bearer ${getToken(fastify)}` },
     });
     expect(res.statusCode).toBe(204);
-    expect(vectorStore.deleteChunks).toHaveBeenCalledWith(id);
+    expect(vectorStore.deleteChunks).toHaveBeenCalledWith("test-user", id);
     expect(db.deleteDocument).toHaveBeenCalledWith(id);
   });
 
@@ -473,7 +518,12 @@ describe("Query routes", () => {
       payload: { question: "Multi-doc question?" },
     });
     expect(res.statusCode).toBe(200);
-    expect(vectorStore.similarChunks).toHaveBeenCalledWith(null, expect.any(Array), 5);
+    expect(vectorStore.similarChunks).toHaveBeenCalledWith(
+      "test-user",
+      null,
+      expect.any(Array),
+      5
+    );
   });
 });
 

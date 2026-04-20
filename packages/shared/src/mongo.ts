@@ -67,10 +67,9 @@ export class MongoDB {
     return this.docs.findOne({ _id: id } as any) as Promise<Document | null>;
   }
 
-  async listDocuments(userId?: string): Promise<Document[]> {
-    const filter = userId ? { userId } : {};
+  async listDocuments(userId: string): Promise<Document[]> {
     return this.docs
-      .find(filter)
+      .find({ userId })
       .sort({ uploadedAt: -1 })
       .toArray() as Promise<Document[]>;
   }
@@ -103,20 +102,16 @@ export class MongoDB {
     await this.docs.deleteOne({ _id: id } as any);
   }
 
-  async getStatusSummary(userId?: string): Promise<
+  async getStatusSummary(userId: string): Promise<
     { status: DocumentStatus; count: number }[]
   > {
-    const pipeline: object[] = [];
-    if (userId) {
-      pipeline.push({ $match: { userId } });
-    }
-    pipeline.push(
-      { $group: { _id: "$status", count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $project: { _id: 0, status: "$_id", count: 1 } },
-    );
     return this.docs
-      .aggregate(pipeline)
+      .aggregate([
+        { $match: { userId } },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $project: { _id: 0, status: "$_id", count: 1 } },
+      ])
       .toArray() as Promise<{ status: DocumentStatus; count: number }[]>;
   }
 }

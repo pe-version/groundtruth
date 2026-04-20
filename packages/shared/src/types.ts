@@ -21,8 +21,8 @@ export interface Document {
 
 export interface KafkaDocumentEvent {
   documentId: string;
+  userId: string;
   filename: string;
-  filePath: string;
 }
 
 export interface Chunk {

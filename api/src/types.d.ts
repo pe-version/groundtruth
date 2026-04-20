@@ -8,6 +8,10 @@ declare module "fastify" {
     kafkaProducer: KafkaProducer;
     config: ApiConfig;
   }
+
+  interface FastifyContextConfig {
+    public?: boolean;
+  }
 }
 
 declare module "@fastify/jwt" {

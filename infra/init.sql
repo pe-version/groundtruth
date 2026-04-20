@@ -4,6 +4,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- Chunks table: stores embedded text chunks with their vectors
 CREATE TABLE IF NOT EXISTS chunks (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     TEXT        NOT NULL,   -- owner; enforces tenant isolation at the storage layer
     document_id TEXT        NOT NULL,   -- matches MongoDB document _id
     content     TEXT        NOT NULL,
     chunk_index INT         NOT NULL,
@@ -20,5 +21,5 @@ CREATE INDEX IF NOT EXISTS chunks_embedding_idx
 ALTER TABLE chunks ADD CONSTRAINT chunks_document_chunk_unique
     UNIQUE (document_id, chunk_index);
 
--- Index for lookups by document
-CREATE INDEX IF NOT EXISTS chunks_document_id_idx ON chunks (document_id);
+-- Compound index for user-scoped lookups
+CREATE INDEX IF NOT EXISTS chunks_user_document_idx ON chunks (user_id, document_id);

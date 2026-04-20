@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
-import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import {
   DocumentStatus,
   type Document,
   type KafkaDocumentEvent,
   UUID_REGEX,
+  getUploadPath,
 } from "@direze/shared";
 
 export async function documentRoutes(fastify: FastifyInstance) {
@@ -38,7 +38,7 @@ export async function documentRoutes(fastify: FastifyInstance) {
       const uploadDir = config.UPLOAD_DIR;
       await mkdir(uploadDir, { recursive: true });
 
-      const filePath = path.join(uploadDir, `${docId}.pdf`);
+      const filePath = getUploadPath(uploadDir, docId);
       const buffer = await data.toBuffer();
 
       // Validate PDF magic bytes
@@ -65,8 +65,8 @@ export async function documentRoutes(fastify: FastifyInstance) {
 
       const event: KafkaDocumentEvent = {
         documentId: docId,
+        userId,
         filename: data.filename,
-        filePath,
       };
 
       try {
@@ -146,12 +146,12 @@ export async function documentRoutes(fastify: FastifyInstance) {
       }
 
       const { vectorStore } = fastify;
-      await vectorStore.deleteChunks(id);
+      await vectorStore.deleteChunks(request.user.sub, id);
       await db.deleteDocument(id);
 
       // Best-effort file cleanup
       try {
-        await unlink(path.join(config.UPLOAD_DIR, `${id}.pdf`));
+        await unlink(getUploadPath(config.UPLOAD_DIR, id));
       } catch {
         // File may already be gone
       }

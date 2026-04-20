@@ -67,15 +67,22 @@ async function main() {
   fastify.decorate("kafkaProducer", kafkaProducer);
   fastify.decorate("config", config);
 
-  // --- Auth hook (skip /health and /api/auth/*) ----------------------------
+  // --- Auth hook -----------------------------------------------------------
+  //
+  // Routes that should skip JWT verification mark themselves with
+  // config.public = true. Checking a route flag is robust against query
+  // strings, trailing slashes, and new routes being added without updating
+  // a hardcoded allowlist.
 
   fastify.addHook("onRequest", async (request, reply) => {
-    const publicPaths = ["/health", "/api/auth/login", "/api/auth/register", "/api/auth/oauth-token"];
-    if (publicPaths.includes(request.url)) return;
+    if (request.routeOptions?.config?.public) return;
     try {
       await request.jwtVerify();
     } catch {
-      reply.code(401).send({ error: "Unauthorized" });
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    if (!request.user?.sub || typeof request.user.sub !== "string") {
+      return reply.code(401).send({ error: "Unauthorized" });
     }
   });
 

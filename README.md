@@ -50,7 +50,7 @@ A production-architecture document Q&A platform. Upload PDFs, ask questions, get
 - Streaming SSE responses with error handling for real-time LLM output in the chat UI
 - Multi-document queries — search across all documents when no specific document is selected
 - Token-aware chunking via js-tiktoken (cl100k_base, matching the embedding model)
-- Dead letter queue (`raw-docs-dlq`) with persistent retry tracking before sending to DLQ
+- Dead letter queue (`raw-docs-dlq`) — failed documents are DLQ'd on first failure for operator inspection; users recover by re-uploading
 - Route protection via Next.js middleware — unauthenticated users redirected to `/login`
 - Dashboard page with aggregation pipeline stats and visual status bar
 - Anthropic Claude for LLM answers, OpenAI for embeddings
@@ -230,7 +230,7 @@ Auth uses a unified approach: the API issues JWTs (HS256) backed by MongoDB user
 | Topic | Producer | Consumer | Purpose |
 |---|---|---|---|
 | `raw-docs` | API on upload | Consumer (processor) | Trigger document processing |
-| `raw-docs-dlq` | Consumer (after 3 retries) | — | Dead-letter queue for failed documents |
+| `raw-docs-dlq` | Consumer (on failure) | — | Dead-letter queue for failed documents |
 
 Topics are auto-created by Kafka on first use (see `KAFKA_AUTO_CREATE_TOPICS_ENABLE`).
 
@@ -303,7 +303,7 @@ The architecture is intentionally production-shaped, but several gaps remain bef
 - [x] NextAuth.js integration on frontend (credentials provider + session)
 - [x] MongoDB dashboard page (`/dashboard` — aggregation pipeline stats)
 - [x] Token-aware chunking (js-tiktoken, cl100k_base encoding)
-- [x] Dead letter queue (`raw-docs-dlq` topic, 3 retries before DLQ)
+- [x] Dead letter queue (`raw-docs-dlq` topic, DLQ on first failure)
 - [x] bcrypt password hashing + httpOnly cookie auth
 - [x] User isolation — per-user document scoping with ownership checks
 - [x] MongoDB-backed user store (replaces in-memory Map)

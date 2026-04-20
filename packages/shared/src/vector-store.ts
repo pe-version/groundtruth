@@ -26,20 +26,22 @@ export class VectorStore {
   }
 
   async insertChunk(
+    userId: string,
     documentId: string,
     chunkIndex: number,
     content: string,
     embedding: number[]
   ): Promise<void> {
     await this.pool.query(
-      `INSERT INTO chunks (document_id, chunk_index, content, embedding)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO chunks (user_id, document_id, chunk_index, content, embedding)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT DO NOTHING`,
-      [documentId, chunkIndex, content, pgvector.toSql(embedding)]
+      [userId, documentId, chunkIndex, content, pgvector.toSql(embedding)]
     );
   }
 
   async similarChunks(
+    userId: string,
     documentId: string | null,
     queryEmbedding: number[],
     topK: number
@@ -51,10 +53,10 @@ export class VectorStore {
         `SELECT id, document_id AS "documentId", content, chunk_index AS "chunkIndex",
                 1 - (embedding <=> $1) AS score
          FROM chunks
-         WHERE document_id = $2
+         WHERE user_id = $2 AND document_id = $3
          ORDER BY embedding <=> $1
-         LIMIT $3`,
-        [vec, documentId, topK]
+         LIMIT $4`,
+        [vec, userId, documentId, topK]
       );
       return rows;
     }
@@ -63,16 +65,18 @@ export class VectorStore {
       `SELECT id, document_id AS "documentId", content, chunk_index AS "chunkIndex",
               1 - (embedding <=> $1) AS score
        FROM chunks
+       WHERE user_id = $2
        ORDER BY embedding <=> $1
-       LIMIT $2`,
-      [vec, topK]
+       LIMIT $3`,
+      [vec, userId, topK]
     );
     return rows;
   }
 
-  async deleteChunks(documentId: string): Promise<void> {
-    await this.pool.query("DELETE FROM chunks WHERE document_id = $1", [
-      documentId,
-    ]);
+  async deleteChunks(userId: string, documentId: string): Promise<void> {
+    await this.pool.query(
+      "DELETE FROM chunks WHERE user_id = $1 AND document_id = $2",
+      [userId, documentId]
+    );
   }
 }

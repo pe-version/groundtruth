@@ -10,6 +10,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     "/auth/register",
     {
       config: {
+        public: true,
         rateLimit: { max: 5, timeWindow: "1 minute" },
       },
       schema: {
@@ -53,6 +54,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     "/auth/login",
     {
       config: {
+        public: true,
         rateLimit: { max: 10, timeWindow: "1 minute" },
       },
       schema: {
@@ -111,6 +113,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     "/auth/oauth-token",
     {
       config: {
+        public: true,
         rateLimit: { max: 30, timeWindow: "1 minute" },
       },
       schema: {

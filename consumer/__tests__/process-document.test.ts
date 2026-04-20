@@ -21,6 +21,7 @@ vi.mock("@direze/shared", async () => {
       Failed: "failed",
     },
     embedText: vi.fn().mockResolvedValue(new Array(1536).fill(0.1)),
+    getUploadPath: (dir: string, id: string) => `${dir}/${id}.pdf`,
   };
 });
 
@@ -69,8 +70,8 @@ describe("processDocument", () => {
 
     const event = {
       documentId: "doc-1",
+      userId: "user-1",
       filename: "test.pdf",
-      filePath: "/tmp/uploads/doc-1.pdf",
     };
 
     const chunkCount = await processDocument(event, db, vectorStore, "/tmp/uploads");
@@ -81,12 +82,13 @@ describe("processDocument", () => {
     expect(embedText).toHaveBeenCalled();
     expect(vectorStore.insertChunk).toHaveBeenCalledTimes(chunkCount);
 
-    // Verify insertChunk was called with correct documentId
+    // Verify insertChunk was called with userId and documentId
     const firstCall = vectorStore.insertChunk.mock.calls[0];
-    expect(firstCall[0]).toBe("doc-1");
-    expect(firstCall[1]).toBe(0); // chunkIndex
-    expect(typeof firstCall[2]).toBe("string"); // content
-    expect(firstCall[3]).toHaveLength(1536); // embedding
+    expect(firstCall[0]).toBe("user-1");
+    expect(firstCall[1]).toBe("doc-1");
+    expect(firstCall[2]).toBe(0); // chunkIndex
+    expect(typeof firstCall[3]).toBe("string"); // content
+    expect(firstCall[4]).toHaveLength(1536); // embedding
   });
 
   it("produces multiple chunks for long text", async () => {
@@ -99,7 +101,7 @@ describe("processDocument", () => {
     vi.mocked(extractTextFromPDF).mockResolvedValueOnce(longText);
 
     const chunkCount = await processDocument(
-      { documentId: "doc-2", filename: "long.pdf", filePath: "/tmp/uploads/long.pdf" },
+      { documentId: "doc-2", userId: "user-1", filename: "long.pdf" },
       db,
       vectorStore,
       "/tmp/uploads"
@@ -109,7 +111,7 @@ describe("processDocument", () => {
     expect(vectorStore.insertChunk).toHaveBeenCalledTimes(chunkCount);
     // Each call should have sequential chunk indices
     for (let i = 0; i < chunkCount; i++) {
-      expect(vectorStore.insertChunk.mock.calls[i][1]).toBe(i);
+      expect(vectorStore.insertChunk.mock.calls[i][2]).toBe(i);
     }
   });
 
@@ -119,7 +121,7 @@ describe("processDocument", () => {
 
     await expect(
       processDocument(
-        { documentId: "doc-3", filename: "empty.pdf", filePath: "/tmp/uploads/empty.pdf" },
+        { documentId: "doc-3", userId: "user-1", filename: "empty.pdf" },
         db,
         vectorStore,
         "/tmp/uploads"
@@ -132,7 +134,7 @@ describe("processDocument", () => {
 
     await expect(
       processDocument(
-        { documentId: "doc-4", filename: "missing.pdf", filePath: "/tmp/uploads/missing.pdf" },
+        { documentId: "doc-4", userId: "user-1", filename: "missing.pdf" },
         db,
         vectorStore,
         "/tmp/uploads"
@@ -146,7 +148,7 @@ describe("processDocument", () => {
 
     await expect(
       processDocument(
-        { documentId: "doc-5", filename: "bad.pdf", filePath: "/tmp/uploads/bad.pdf" },
+        { documentId: "doc-5", userId: "user-1", filename: "bad.pdf" },
         db,
         vectorStore,
         "/tmp/uploads"
@@ -154,14 +156,18 @@ describe("processDocument", () => {
     ).rejects.toThrow("Not a valid PDF");
   });
 
-  it("rejects file paths outside upload directory", async () => {
-    await expect(
-      processDocument(
-        { documentId: "doc-6", filename: "evil.pdf", filePath: "/etc/passwd" },
-        db,
-        vectorStore,
-        "/tmp/uploads"
-      )
-    ).rejects.toThrow("Invalid file path");
+  it("derives filePath from documentId and uploadDir (no attacker-controlled path)", async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(Buffer.from("pdf"));
+    vi.mocked(extractTextFromPDF).mockResolvedValueOnce("some text here");
+
+    await processDocument(
+      { documentId: "doc-6", userId: "user-1", filename: "evil.pdf" },
+      db,
+      vectorStore,
+      "/tmp/uploads"
+    );
+
+    // readFile was called with the derived path, regardless of any external input
+    expect(readFile).toHaveBeenCalledWith("/tmp/uploads/doc-6.pdf");
   });
 });

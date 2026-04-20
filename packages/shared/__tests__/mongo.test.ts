@@ -70,7 +70,7 @@ describe("MongoDB", () => {
     expect(result).toBeNull();
   });
 
-  it("listDocuments returns sorted documents", async () => {
+  it("listDocuments filters by userId and sorts by uploadedAt desc", async () => {
     const docs = [
       { _id: "doc-1", filename: "a.pdf" },
       { _id: "doc-2", filename: "b.pdf" },
@@ -82,22 +82,10 @@ describe("MongoDB", () => {
     };
     col.find.mockReturnValueOnce(mockSort);
 
-    const result = await db.listDocuments();
+    const result = await db.listDocuments("user-1");
     expect(result).toEqual(docs);
-    expect(col.find).toHaveBeenCalledWith({});
-    expect(mockSort.sort).toHaveBeenCalledWith({ uploadedAt: -1 });
-  });
-
-  it("listDocuments filters by userId when provided", async () => {
-    const mockSort = {
-      sort: vi.fn().mockReturnValue({
-        toArray: vi.fn().mockResolvedValue([]),
-      }),
-    };
-    col.find.mockReturnValueOnce(mockSort);
-
-    await db.listDocuments("user-1");
     expect(col.find).toHaveBeenCalledWith({ userId: "user-1" });
+    expect(mockSort.sort).toHaveBeenCalledWith({ uploadedAt: -1 });
   });
 
   it("updateStatus sets status, chunkCount, and updatedAt", async () => {
@@ -133,7 +121,7 @@ describe("MongoDB", () => {
     expect(col.deleteOne).toHaveBeenCalledWith({ _id: "doc-1" });
   });
 
-  it("getStatusSummary runs aggregation pipeline", async () => {
+  it("getStatusSummary runs user-scoped aggregation pipeline", async () => {
     const summary = [
       { status: "ready", count: 5 },
       { status: "pending", count: 2 },
@@ -143,23 +131,13 @@ describe("MongoDB", () => {
     };
     col.aggregate.mockReturnValueOnce(mockAggregate);
 
-    const result = await db.getStatusSummary();
+    const result = await db.getStatusSummary("user-1");
     expect(result).toEqual(summary);
     expect(col.aggregate).toHaveBeenCalledWith([
+      { $match: { userId: "user-1" } },
       { $group: { _id: "$status", count: { $sum: 1 } } },
       { $sort: { count: -1 } },
       { $project: { _id: 0, status: "$_id", count: 1 } },
     ]);
-  });
-
-  it("getStatusSummary filters by userId when provided", async () => {
-    const mockAggregate = {
-      toArray: vi.fn().mockResolvedValue([]),
-    };
-    col.aggregate.mockReturnValueOnce(mockAggregate);
-
-    await db.getStatusSummary("user-1");
-    const pipeline = col.aggregate.mock.calls[0][0];
-    expect(pipeline[0]).toEqual({ $match: { userId: "user-1" } });
   });
 });

@@ -45,6 +45,7 @@ export async function queryRoutes(fastify: FastifyInstance) {
       const questionEmbedding = await embedText(question);
 
       const chunks = await vectorStore.similarChunks(
+        userId,
         documentId ?? null,
         questionEmbedding,
         topK
@@ -100,6 +101,7 @@ export async function queryRoutes(fastify: FastifyInstance) {
       const questionEmbedding = await embedText(question);
 
       const chunks = await vectorStore.similarChunks(
+        userId,
         documentId ?? null,
         questionEmbedding,
         topK
