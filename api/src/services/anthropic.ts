@@ -4,7 +4,15 @@ let client: Anthropic | null = null;
 
 function getClient(): Anthropic {
   if (!client) {
-    client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      // Bound a hung upstream: a stream that produces no tokens for 60s is
+      // killed and surfaces as an error to the caller (handled by the SSE
+      // route's catch block). The SDK's own retries are disabled — we DLQ
+      // on first failure, so hidden retries would only delay that.
+      timeout: 60_000,
+      maxRetries: 0,
+    });
   }
   return client;
 }

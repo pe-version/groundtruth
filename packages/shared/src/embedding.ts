@@ -6,7 +6,12 @@ let client: OpenAI | null = null;
 
 function getClient(): OpenAI {
   if (!client) {
-    client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+      // 30s per embedding call; SDK retries disabled (DLQ-on-first-failure).
+      timeout: 30_000,
+      maxRetries: 0,
+    });
   }
   return client;
 }

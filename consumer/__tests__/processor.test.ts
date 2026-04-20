@@ -1,45 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { chunkText, chunkByTokens } from "../src/processor.js";
-
-describe("chunkText (word-based, legacy)", () => {
-  it("returns empty array for empty string", () => {
-    expect(chunkText("", 512, 64)).toEqual([]);
-  });
-
-  it("returns empty array for whitespace-only string", () => {
-    expect(chunkText("   \n\t  ", 512, 64)).toEqual([]);
-  });
-
-  it("returns single chunk when text is shorter than chunkSize", () => {
-    const text = "hello world foo bar";
-    const chunks = chunkText(text, 512, 64);
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]).toBe("hello world foo bar");
-  });
-
-  it("chunks text with correct overlap", () => {
-    const words = Array.from({ length: 10 }, (_, i) => `w${i}`);
-    const text = words.join(" ");
-    const chunks = chunkText(text, 4, 2);
-
-    expect(chunks.length).toBeGreaterThanOrEqual(4);
-    expect(chunks[0]).toBe("w0 w1 w2 w3");
-    expect(chunks[1]).toBe("w2 w3 w4 w5");
-  });
-
-  it("last chunk includes remaining words", () => {
-    const words = Array.from({ length: 7 }, (_, i) => `w${i}`);
-    const text = words.join(" ");
-    const chunks = chunkText(text, 4, 1);
-    const lastChunk = chunks[chunks.length - 1];
-    expect(lastChunk).toContain("w6");
-  });
-
-  it("handles chunk size of 1 with no overlap", () => {
-    const chunks = chunkText("a b c", 1, 0);
-    expect(chunks).toEqual(["a", "b", "c"]);
-  });
-});
+import { chunkByTokens } from "../src/processor.js";
 
 describe("chunkByTokens (token-aware)", () => {
   it("returns empty array for empty string", () => {

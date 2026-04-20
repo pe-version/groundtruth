@@ -135,7 +135,9 @@ export async function queryRoutes(fastify: FastifyInstance) {
         `data: ${JSON.stringify({ type: "sources", sources })}\n\n`
       );
 
-      // Stream LLM tokens with error handling
+      // Stream LLM tokens with error handling. Upstream errors often carry
+      // provider-specific details (URLs, account ids, internal 5xx text) —
+      // log server-side, send a generic message to the client.
       try {
         for await (const token of streamClaude(contextString, question)) {
           reply.raw.write(
@@ -143,9 +145,9 @@ export async function queryRoutes(fastify: FastifyInstance) {
           );
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : "LLM stream failed";
+        request.log.error({ err }, "LLM stream failed");
         reply.raw.write(
-          `data: ${JSON.stringify({ type: "error", message })}\n\n`
+          `data: ${JSON.stringify({ type: "error", message: "The answer stream was interrupted. Please try again." })}\n\n`
         );
       }
 

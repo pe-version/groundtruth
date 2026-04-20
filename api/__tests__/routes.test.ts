@@ -159,6 +159,34 @@ describe("Auth routes", () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it("POST /api/auth/register rejects username with OAuth namespace separator", async () => {
+    const res = await fastify.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: { username: "github:12345", password: "secretpass123" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("POST /api/auth/register normalizes username (case-insensitive + NFKC)", async () => {
+    // Mixed-case should normalize to lowercase; re-registering the lowercase
+    // form should now conflict.
+    const mixed = await fastify.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: { username: "Charlie", password: "secretpass123" },
+    });
+    expect(mixed.statusCode).toBe(200);
+    expect(mixed.json().userId).toBe("charlie");
+
+    const lower = await fastify.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: { username: "charlie", password: "secretpass123" },
+    });
+    expect(lower.statusCode).toBe(409);
+  });
+
   it("POST /api/auth/login succeeds with correct credentials", async () => {
     const res = await fastify.inject({
       method: "POST",

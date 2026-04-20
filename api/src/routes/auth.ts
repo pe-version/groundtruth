@@ -4,6 +4,16 @@ import type { FastifyInstance } from "fastify";
 
 const SALT_ROUNDS = 10;
 
+// Usernames are restricted to a narrow charset so they can never collide with
+// the OAuth id namespace (`provider:providerId`) or trip Unicode-normalization
+// lookalike bugs (e.g., "alice" vs "alıce"). We also NFKC-normalize and
+// lowercase before storage/lookup so case and width variants map to one user.
+const USERNAME_REGEX = /^[a-z0-9_.-]{3,64}$/;
+
+function normalizeUsername(input: string): string {
+  return input.normalize("NFKC").toLowerCase();
+}
+
 export async function authRoutes(fastify: FastifyInstance) {
   // Register endpoint — creates a new user with hashed password stored in MongoDB.
   fastify.post<{ Body: { username: string; password: string } }>(
@@ -18,24 +28,29 @@ export async function authRoutes(fastify: FastifyInstance) {
           type: "object",
           required: ["username", "password"],
           properties: {
-            username: { type: "string", minLength: 1, maxLength: 100 },
+            username: { type: "string", minLength: 3, maxLength: 64 },
             password: { type: "string", minLength: 8, maxLength: 200 },
           },
         },
       },
     },
     async (request, reply) => {
-      const { username, password } = request.body;
+      const normalized = normalizeUsername(request.body.username);
+      if (!USERNAME_REGEX.test(normalized)) {
+        return reply.code(400).send({
+          error: "Username must be 3-64 characters: letters, digits, _ . or -",
+        });
+      }
 
-      const existing = await fastify.db.getUser(username);
+      const existing = await fastify.db.getUser(normalized);
       if (existing) {
         return reply.code(409).send({ error: "User already exists" });
       }
 
-      const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-      await fastify.db.createUser(username, passwordHash);
+      const passwordHash = await bcrypt.hash(request.body.password, SALT_ROUNDS);
+      await fastify.db.createUser(normalized, passwordHash);
 
-      const token = fastify.jwt.sign({ sub: username }, { expiresIn: "1h" });
+      const token = fastify.jwt.sign({ sub: normalized }, { expiresIn: "1h" });
 
       reply
         .setCookie("direze_token", token, {
@@ -45,7 +60,7 @@ export async function authRoutes(fastify: FastifyInstance) {
           sameSite: "strict",
           maxAge: 3600,
         })
-        .send({ token, userId: username });
+        .send({ token, userId: normalized });
     }
   );
 
@@ -69,19 +84,19 @@ export async function authRoutes(fastify: FastifyInstance) {
       },
     },
     async (request, reply) => {
-      const { username, password } = request.body;
+      const normalized = normalizeUsername(request.body.username);
 
-      const user = await fastify.db.getUser(username);
-      if (!user) {
+      const user = await fastify.db.getUser(normalized);
+      if (!user || !user.passwordHash) {
         return reply.code(401).send({ error: "Invalid credentials" });
       }
 
-      const valid = await bcrypt.compare(password, user.passwordHash);
+      const valid = await bcrypt.compare(request.body.password, user.passwordHash);
       if (!valid) {
         return reply.code(401).send({ error: "Invalid credentials" });
       }
 
-      const token = fastify.jwt.sign({ sub: username }, { expiresIn: "1h" });
+      const token = fastify.jwt.sign({ sub: normalized }, { expiresIn: "1h" });
 
       reply
         .setCookie("direze_token", token, {
@@ -91,7 +106,7 @@ export async function authRoutes(fastify: FastifyInstance) {
           sameSite: "strict",
           maxAge: 3600,
         })
-        .send({ token, userId: username });
+        .send({ token, userId: normalized });
     }
   );
 

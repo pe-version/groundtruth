@@ -17,7 +17,11 @@ export class MongoDB {
   }
 
   static async connect(uri: string): Promise<MongoDB> {
-    const client = new MongoClient(uri);
+    // Fail fast if Mongo is unreachable instead of hanging the API boot.
+    const client = new MongoClient(uri, {
+      serverSelectionTimeoutMS: 5_000,
+      socketTimeoutMS: 30_000,
+    });
     await client.connect();
     await client.db(DB_NAME).command({ ping: 1 });
     return new MongoDB(client);

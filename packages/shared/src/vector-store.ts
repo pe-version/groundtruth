@@ -10,7 +10,19 @@ export class VectorStore {
   }
 
   static async connect(dsn: string): Promise<VectorStore> {
-    const pool = new pg.Pool({ connectionString: dsn });
+    const pool = new pg.Pool({
+      connectionString: dsn,
+      // Bound every stage of the connection lifecycle. Without these a stalled
+      // Postgres or a broken network path hangs request handlers forever.
+      connectionTimeoutMillis: 5_000,
+      idleTimeoutMillis: 30_000,
+      max: 10,
+    });
+    // Per-session 10s statement timeout — caps any single query. Set on each
+    // connection as it enters the pool so pool-recycled connections stay bounded.
+    pool.on("connect", (c) => {
+      c.query("SET statement_timeout = 10000").catch(() => {});
+    });
     const client = await pool.connect();
     try {
       await pgvector.registerType(client);

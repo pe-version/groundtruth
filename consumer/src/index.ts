@@ -1,13 +1,7 @@
 import { Kafka, type EachMessagePayload } from "kafkajs";
-import {
-  loadConsumerConfig,
-  MongoDB,
-  VectorStore,
-  DocumentStatus,
-  type KafkaDocumentEvent,
-} from "@direze/shared";
-import { processDocument } from "./processor.js";
+import { loadConsumerConfig, MongoDB, VectorStore } from "@direze/shared";
 import { DeadLetterQueue } from "./dlq.js";
+import { handleMessage } from "./handle-message.js";
 
 async function main() {
   const config = loadConsumerConfig();
@@ -37,74 +31,31 @@ async function main() {
       topic,
       heartbeat,
     }: EachMessagePayload) => {
-      const value = message.value?.toString();
-      if (!value) {
-        console.warn("Empty message received, skipping");
-        await commitOffset(consumer, topic, partition, message.offset);
-        return;
-      }
-
-      let event: KafkaDocumentEvent;
-      try {
-        event = JSON.parse(value);
-      } catch (err) {
-        console.error("Could not parse message, sending to DLQ");
-        await dlq.send(
-          { key: message.key?.toString(), value, topic, partition, offset: message.offset },
-          err instanceof Error ? err : new Error(String(err))
-        );
-        await commitOffset(consumer, topic, partition, message.offset);
-        return;
-      }
-
-      console.log(
-        `Processing document ${event.documentId} (${event.filename})`
-      );
-      await db.updateStatus(event.documentId, DocumentStatus.Processing, 0);
-
-      // Periodic heartbeat to prevent rebalancing during long processing.
-      const heartbeatInterval = setInterval(() => {
-        heartbeat().catch(() => {});
-      }, 5000);
-
-      try {
-        const chunkCount = await processDocument(
-          event,
+      await handleMessage(
+        {
           db,
           vectorStore,
-          config.UPLOAD_DIR
-        );
-        await db.updateStatus(
-          event.documentId,
-          DocumentStatus.Ready,
-          chunkCount
-        );
-        console.log(
-          `Done: ${event.documentId} — ${chunkCount} chunks indexed`
-        );
-      } catch (err) {
-        // DLQ-on-first-failure: no in-process retries. Users recover by
-        // re-uploading. The DLQ preserves the original message for operator
-        // inspection and manual replay.
-        const error = err instanceof Error ? err : new Error(String(err));
-        console.error(
-          `Error processing ${event.documentId} — sending to DLQ:`,
-          error.message
-        );
-        await db.markFailed(event.documentId, error.message);
-        await dlq.send(
-          { key: message.key?.toString(), value, topic, partition, offset: message.offset },
-          error
-        );
-      } finally {
-        clearInterval(heartbeatInterval);
-      }
-
+          dlq,
+          uploadDir: config.UPLOAD_DIR,
+          heartbeat,
+          log: {
+            info: (m) => console.log(m),
+            warn: (m) => console.warn(m),
+            error: (m, err) => console.error(m, err?.message ?? ""),
+          },
+        },
+        {
+          key: message.key?.toString(),
+          value: message.value?.toString() ?? null,
+          topic,
+          partition,
+          offset: message.offset,
+        }
+      );
       await commitOffset(consumer, topic, partition, message.offset);
     },
   });
 
-  // Graceful shutdown
   const shutdown = async () => {
     console.log("Consumer shutting down...");
     try { await consumer.disconnect(); } catch (err) { console.error("Error disconnecting consumer:", err); }

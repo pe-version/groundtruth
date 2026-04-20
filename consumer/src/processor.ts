@@ -91,22 +91,3 @@ export function chunkByTokens(
   return chunks;
 }
 
-/**
- * @deprecated Use chunkByTokens instead. Kept for backward compatibility in tests.
- */
-export function chunkText(
-  text: string,
-  chunkSize: number,
-  overlap: number
-): string[] {
-  const words = text.split(/\s+/).filter((w) => w.length > 0);
-  if (words.length === 0) return [];
-
-  const chunks: string[] = [];
-  for (let i = 0; i < words.length; i += chunkSize - overlap) {
-    const end = Math.min(i + chunkSize, words.length);
-    chunks.push(words.slice(i, end).join(" "));
-    if (end === words.length) break;
-  }
-  return chunks;
-}

@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
-import { FileText, UploadCloud, MessageSquare, LogOut } from "lucide-react";
+import { FileText, UploadCloud, MessageSquare, LayoutDashboard, LogOut } from "lucide-react";
 
 const links = [
   { href: "/documents", label: "Documents", icon: FileText },
   { href: "/upload", label: "Upload", icon: UploadCloud },
   { href: "/chat", label: "Ask a Question", icon: MessageSquare },
+  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
 ];
 
 export default function Nav() {

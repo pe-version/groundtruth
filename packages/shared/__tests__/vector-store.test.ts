@@ -15,6 +15,7 @@ vi.mock("pg", () => ({
         release: mockRelease,
       }),
       end: mockEnd,
+      on: vi.fn(),
     })),
   },
 }));
