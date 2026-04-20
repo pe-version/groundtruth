@@ -5,3 +5,4 @@ export * from "./vector-store.js";
 export * from "./embedding.js";
 export * from "./validation.js";
 export * from "./storage.js";
+export * from "./logger.js";

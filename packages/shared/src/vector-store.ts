@@ -91,4 +91,22 @@ export class VectorStore {
       [userId, documentId]
     );
   }
+
+  // Janitor support: list distinct document_ids with chunks. The janitor
+  // cross-references this with Mongo to find orphaned chunks (document was
+  // deleted but chunk cleanup didn't complete).
+  async listAllDocumentIds(): Promise<string[]> {
+    const { rows } = await this.pool.query<{ document_id: string }>(
+      "SELECT DISTINCT document_id FROM chunks"
+    );
+    return rows.map((r) => r.document_id);
+  }
+
+  async deleteOrphanChunks(documentId: string): Promise<number> {
+    const result = await this.pool.query(
+      "DELETE FROM chunks WHERE document_id = $1",
+      [documentId]
+    );
+    return result.rowCount ?? 0;
+  }
 }

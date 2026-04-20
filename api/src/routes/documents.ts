@@ -70,8 +70,11 @@ export async function documentRoutes(fastify: FastifyInstance) {
       };
 
       try {
-        await kafkaProducer.publishDocumentEvent(event);
+        await kafkaProducer.publishDocumentEvent(event, {
+          requestId: request.id as string,
+        });
       } catch (err) {
+        request.log.error({ err, documentId: docId }, "Kafka publish failed");
         await db.markFailed(
           docId,
           "Failed to queue for processing: " + (err as Error).message

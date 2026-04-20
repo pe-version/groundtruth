@@ -12,9 +12,33 @@ vi.mock("@direze/shared", () => ({
     Ready: "ready",
     Failed: "failed",
   },
+  KafkaDocumentEventSchema: {
+    parse: (v: unknown) => {
+      if (
+        typeof v !== "object" ||
+        v === null ||
+        typeof (v as any).documentId !== "string" ||
+        typeof (v as any).userId !== "string" ||
+        typeof (v as any).filename !== "string"
+      ) {
+        throw new Error("Invalid KafkaDocumentEvent");
+      }
+      return v;
+    },
+  },
 }));
 
 import { processDocument } from "../src/processor.js";
+
+function makeLog(): any {
+  const log: any = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  };
+  log.child = vi.fn(() => log);
+  return log;
+}
 
 function makeDeps() {
   const db = {
@@ -24,7 +48,7 @@ function makeDeps() {
   const vectorStore = {} as any;
   const dlq = { send: vi.fn().mockResolvedValue(undefined) } as any;
   const heartbeat = vi.fn().mockResolvedValue(undefined);
-  const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const log = makeLog();
   return {
     deps: { db, vectorStore, dlq, uploadDir: "/tmp/uploads", heartbeat, log },
     db,

@@ -106,6 +106,38 @@ export class MongoDB {
     await this.docs.deleteOne({ _id: id } as any);
   }
 
+  // Janitor support: returns every document's id and status, across all users.
+  // Used for reconciliation against the filesystem and pgvector — never for
+  // serving user-facing traffic.
+  async listAllDocumentIds(): Promise<Array<{ id: string; status: DocumentStatus; updatedAt: Date }>> {
+    const rows = await this.docs
+      .find({}, { projection: { _id: 1, status: 1, updatedAt: 1 } })
+      .toArray();
+    return rows.map((r: any) => ({
+      id: r._id as string,
+      status: r.status as DocumentStatus,
+      updatedAt: r.updatedAt as Date,
+    }));
+  }
+
+  async listStuckDocuments(
+    olderThan: Date
+  ): Promise<Array<{ id: string; status: DocumentStatus }>> {
+    const rows = await this.docs
+      .find(
+        {
+          status: { $in: [DocumentStatus.Pending, DocumentStatus.Processing] },
+          updatedAt: { $lt: olderThan },
+        } as any,
+        { projection: { _id: 1, status: 1 } }
+      )
+      .toArray();
+    return rows.map((r: any) => ({
+      id: r._id as string,
+      status: r.status as DocumentStatus,
+    }));
+  }
+
   async getStatusSummary(userId: string): Promise<
     { status: DocumentStatus; count: number }[]
   > {

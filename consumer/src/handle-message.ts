@@ -1,6 +1,8 @@
 import {
   DocumentStatus,
+  KafkaDocumentEventSchema,
   type KafkaDocumentEvent,
+  type Logger,
   type MongoDB,
   type VectorStore,
 } from "@direze/shared";
@@ -13,11 +15,7 @@ export interface HandleMessageDeps {
   dlq: DeadLetterQueue;
   uploadDir: string;
   heartbeat: () => Promise<void>;
-  log: {
-    info: (msg: string) => void;
-    warn: (msg: string) => void;
-    error: (msg: string, err?: Error) => void;
-  };
+  log: Logger;
 }
 
 export interface KafkaMessageEnvelope {
@@ -42,12 +40,15 @@ export async function handleMessage(
     return;
   }
 
+  // Parse, don't cast. Malformed or unexpected shapes go straight to the DLQ
+  // with a descriptive error rather than blowing up deeper in the pipeline.
   let event: KafkaDocumentEvent;
   try {
-    event = JSON.parse(msg.value);
+    const parsed = JSON.parse(msg.value);
+    event = KafkaDocumentEventSchema.parse(parsed);
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
-    log.error("Could not parse message, sending to DLQ", error);
+    log.error({ err: error }, "Invalid message, sending to DLQ");
     await dlq.send(
       { key: msg.key, value: msg.value, topic: msg.topic, partition: msg.partition, offset: msg.offset },
       error
@@ -55,23 +56,30 @@ export async function handleMessage(
     return;
   }
 
-  log.info(`Processing document ${event.documentId} (${event.filename})`);
+  // Child logger carries documentId + userId on every subsequent line from
+  // this message's lifetime (the caller has already attached requestId).
+  const msgLog = log.child({
+    documentId: event.documentId,
+    userId: event.userId,
+  });
+
+  msgLog.info({ filename: event.filename }, "Processing document");
   await db.updateStatus(event.documentId, DocumentStatus.Processing, 0);
 
   const heartbeatInterval = setInterval(() => {
-    heartbeat().catch(() => {});
+    heartbeat().catch((err) => msgLog.warn({ err }, "Heartbeat failed"));
   }, 5000);
 
   try {
     const chunkCount = await processDocument(event, db, vectorStore, uploadDir);
     await db.updateStatus(event.documentId, DocumentStatus.Ready, chunkCount);
-    log.info(`Done: ${event.documentId} — ${chunkCount} chunks indexed`);
+    msgLog.info({ chunkCount }, "Document processed");
   } catch (err) {
     // DLQ-on-first-failure: no in-process retries. Users recover by
     // re-uploading. The DLQ preserves the original message for operator
     // inspection and manual replay.
     const error = err instanceof Error ? err : new Error(String(err));
-    log.error(`Error processing ${event.documentId} — sending to DLQ`, error);
+    msgLog.error({ err: error }, "Processing failed, sending to DLQ");
     await db.markFailed(event.documentId, error.message);
     await dlq.send(
       { key: msg.key, value: msg.value, topic: msg.topic, partition: msg.partition, offset: msg.offset },

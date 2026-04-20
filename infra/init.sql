@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     document_id TEXT        NOT NULL,   -- matches MongoDB document _id
     content     TEXT        NOT NULL,
     chunk_index INT         NOT NULL,
-    embedding   vector(1536),           -- OpenAI text-embedding-3-small dimension
+    embedding   vector(1536),           -- MUST match EMBED_DIM in packages/shared/src/embedding.ts
     created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 

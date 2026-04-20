@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
@@ -5,20 +6,25 @@ import multipart from "@fastify/multipart";
 import jwt from "@fastify/jwt";
 import helmet from "@fastify/helmet";
 import cookie from "@fastify/cookie";
-import { loadApiConfig, MongoDB, VectorStore } from "@direze/shared";
+import { loadApiConfig, MongoDB, VectorStore, createLogger } from "@direze/shared";
 import { documentRoutes } from "./routes/documents.js";
 import { queryRoutes } from "./routes/query.js";
 import { healthRoutes } from "./routes/health.js";
 import { authRoutes } from "./routes/auth.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { KafkaProducer } from "./services/kafka-producer.js";
+import { startJanitor } from "./services/janitor.js";
 
 async function main() {
   const config = loadApiConfig();
+  const logger = createLogger("api");
 
   const fastify = Fastify({
-    logger: true,
+    logger,
     bodyLimit: 1_048_576, // 1 MB default body limit
+    genReqId: (req) => (req.headers["x-request-id"] as string) ?? randomUUID(),
+    requestIdHeader: "x-request-id",
+    requestIdLogLabel: "requestId",
   });
 
   // --- Plugins -----------------------------------------------------------
@@ -84,6 +90,9 @@ async function main() {
     if (!request.user?.sub || typeof request.user.sub !== "string") {
       return reply.code(401).send({ error: "Unauthorized" });
     }
+    // Attach userId to the request logger so every subsequent line in this
+    // request (and any Kafka publishes) carries it automatically.
+    request.log = request.log.child({ userId: request.user.sub });
   });
 
   // --- Routes -------------------------------------------------------------
@@ -94,10 +103,26 @@ async function main() {
   await fastify.register(queryRoutes, { prefix: "/api" });
   await fastify.register(dashboardRoutes, { prefix: "/api" });
 
+  // --- Janitor ------------------------------------------------------------
+  //
+  // Periodic reconciliation of the three storage systems (uploads volume,
+  // Mongo metadata, pgvector chunks). Catches leaks from crashes, dropped
+  // Kafka messages, and partial deletes.
+
+  const stopJanitor = startJanitor({
+    db,
+    vectorStore,
+    uploadDir: config.UPLOAD_DIR,
+    log: logger.child({ component: "janitor" }),
+    intervalMs: 10 * 60_000,   // every 10 min
+    orphanAgeMs: 60 * 60_000,  // only touch things older than 1h
+  });
+
   // --- Graceful shutdown ---------------------------------------------------
 
   const shutdown = async () => {
     fastify.log.info("Shutting down...");
+    stopJanitor();
     try { await fastify.close(); } catch (err) { fastify.log.error(err, "Error closing Fastify"); }
     try { await kafkaProducer.disconnect(); } catch (err) { fastify.log.error(err, "Error disconnecting Kafka"); }
     try { await vectorStore.close(); } catch (err) { fastify.log.error(err, "Error closing VectorStore"); }

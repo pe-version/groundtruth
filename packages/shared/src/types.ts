@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export const DocumentStatus = {
   Pending: "pending",
   Processing: "processing",
@@ -19,11 +21,18 @@ export interface Document {
   errorMsg?: string;
 }
 
-export interface KafkaDocumentEvent {
-  documentId: string;
-  userId: string;
-  filename: string;
-}
+// Runtime schema for messages on the `raw-docs` Kafka topic. The type is
+// *derived* from the schema so there is no way for the declared shape and
+// the validator to drift apart — they are literally the same definition.
+// Parsing discipline: every trust boundary that receives a KafkaDocumentEvent
+// uses KafkaDocumentEventSchema.parse(), never a cast.
+export const KafkaDocumentEventSchema = z.object({
+  documentId: z.string().min(1),
+  userId: z.string().min(1),
+  filename: z.string().min(1),
+});
+
+export type KafkaDocumentEvent = z.infer<typeof KafkaDocumentEventSchema>;
 
 export interface Chunk {
   id: string;

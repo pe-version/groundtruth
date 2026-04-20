@@ -1,10 +1,11 @@
 import { Kafka, type EachMessagePayload } from "kafkajs";
-import { loadConsumerConfig, MongoDB, VectorStore } from "@direze/shared";
+import { loadConsumerConfig, MongoDB, VectorStore, createLogger } from "@direze/shared";
 import { DeadLetterQueue } from "./dlq.js";
 import { handleMessage } from "./handle-message.js";
 
 async function main() {
   const config = loadConsumerConfig();
+  const log = createLogger("consumer");
 
   const db = await MongoDB.connect(config.MONGO_URI);
   const vectorStore = await VectorStore.connect(config.POSTGRES_DSN);
@@ -21,7 +22,7 @@ async function main() {
   const dlq = new DeadLetterQueue(kafka);
   await dlq.connect();
 
-  console.log("Consumer started, waiting for messages...");
+  log.info("Consumer started, waiting for messages");
 
   await consumer.run({
     autoCommit: false,
@@ -31,6 +32,16 @@ async function main() {
       topic,
       heartbeat,
     }: EachMessagePayload) => {
+      // Propagate the API-side requestId through Kafka headers so a single
+      // grep can follow an upload from HTTP entry to chunks indexed.
+      const requestId = message.headers?.["x-request-id"]?.toString();
+      const msgLog = log.child({
+        requestId,
+        topic,
+        partition,
+        offset: message.offset,
+      });
+
       await handleMessage(
         {
           db,
@@ -38,11 +49,7 @@ async function main() {
           dlq,
           uploadDir: config.UPLOAD_DIR,
           heartbeat,
-          log: {
-            info: (m) => console.log(m),
-            warn: (m) => console.warn(m),
-            error: (m, err) => console.error(m, err?.message ?? ""),
-          },
+          log: msgLog,
         },
         {
           key: message.key?.toString(),
@@ -57,11 +64,11 @@ async function main() {
   });
 
   const shutdown = async () => {
-    console.log("Consumer shutting down...");
-    try { await consumer.disconnect(); } catch (err) { console.error("Error disconnecting consumer:", err); }
-    try { await dlq.disconnect(); } catch (err) { console.error("Error disconnecting DLQ:", err); }
-    try { await vectorStore.close(); } catch (err) { console.error("Error closing VectorStore:", err); }
-    try { await db.disconnect(); } catch (err) { console.error("Error disconnecting MongoDB:", err); }
+    log.info("Consumer shutting down");
+    try { await consumer.disconnect(); } catch (err) { log.error({ err }, "Error disconnecting consumer"); }
+    try { await dlq.disconnect(); } catch (err) { log.error({ err }, "Error disconnecting DLQ"); }
+    try { await vectorStore.close(); } catch (err) { log.error({ err }, "Error closing VectorStore"); }
+    try { await db.disconnect(); } catch (err) { log.error({ err }, "Error disconnecting MongoDB"); }
     process.exit(0);
   };
 
@@ -81,6 +88,7 @@ async function commitOffset(
 }
 
 main().catch((err) => {
+  // Logger may not be initialized if config load failed; fall back to console.
   console.error("Fatal error:", err);
   process.exit(1);
 });
