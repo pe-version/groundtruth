@@ -7,7 +7,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Direze — Document Q&A",
+  title: "Groundtruth — Document Q&A",
   description: "Upload PDFs and get instant answers from your documents",
 };
 

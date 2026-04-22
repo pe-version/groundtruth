@@ -1,4 +1,4 @@
-# Direze — Document Q&A with RAG
+# Groundtruth — Document Q&A with RAG
 
 A production-architecture document Q&A platform. Upload PDFs, ask questions, get answers grounded in the source text.
 
@@ -80,8 +80,8 @@ A production-architecture document Q&A platform. Upload PDFs, ask questions, get
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/yourname/direze
-cd direze
+git clone https://github.com/yourname/groundtruth
+cd groundtruth
 cp .env.example .env
 # Edit .env and set ANTHROPIC_API_KEY, OPENAI_API_KEY, and JWT_SECRET
 ```
@@ -97,7 +97,7 @@ docker-compose up -d zookeeper kafka mongo postgres
 
 ```bash
 npm install
-npm run build -w @direze/shared
+npm run build -w @groundtruth/shared
 ```
 
 ### 4. Run the API
@@ -129,7 +129,7 @@ docker-compose up --build
 ## Project Structure
 
 ```
-direze/
+groundtruth/
 ├── packages/shared/                  # Shared TypeScript package
 │   └── src/
 │       ├── types.ts                  # Document, User, Chunk, event interfaces
@@ -246,8 +246,8 @@ Kafka's consumer group (set via `KAFKA_GROUP_ID`) distributes partitions across 
 
 ```bash
 npm test                    # Run all workspace tests
-npm test -w direze-api      # API tests only
-npm test -w direze-consumer # Consumer tests only
+npm test -w groundtruth-api      # API tests only
+npm test -w groundtruth-consumer # Consumer tests only
 ```
 
 ## Production Readiness

@@ -5,7 +5,7 @@ import {
   type MongoDB,
   type VectorStore,
   type Logger,
-} from "@direze/shared";
+} from "@groundtruth/shared";
 
 export interface JanitorDeps {
   db: MongoDB;

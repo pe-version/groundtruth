@@ -1,4 +1,4 @@
-import type { MongoDB, VectorStore, ApiConfig } from "@direze/shared";
+import type { MongoDB, VectorStore, ApiConfig } from "@groundtruth/shared";
 import type { KafkaProducer } from "./services/kafka-producer.js";
 
 declare module "fastify" {

@@ -1,4 +1,4 @@
-// lib/api.ts — typed client for the Direze API
+// lib/api.ts — typed client for the Groundtruth API
 // Auth is handled via httpOnly cookies set by the API.
 // The NextAuth session provides the token for server-side calls;
 // browser requests use credentials: "include" to send cookies.

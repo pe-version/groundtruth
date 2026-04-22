@@ -7,7 +7,7 @@ import {
   type KafkaDocumentEvent,
   UUID_REGEX,
   getUploadPath,
-} from "@direze/shared";
+} from "@groundtruth/shared";
 
 export async function documentRoutes(fastify: FastifyInstance) {
   const { db, kafkaProducer, config } = fastify;

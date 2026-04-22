@@ -1,7 +1,7 @@
 import { MongoClient, Collection } from "mongodb";
 import { DocumentStatus, type Document, type User } from "./types.js";
 
-const DB_NAME = "direze";
+const DB_NAME = "groundtruth";
 const COLLECTION = "documents";
 const USERS_COLLECTION = "users";
 

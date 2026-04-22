@@ -18,7 +18,7 @@ export default function Nav() {
   return (
     <nav className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center justify-between shrink-0">
       <div className="flex items-center gap-6">
-        <span className="text-white font-semibold text-lg tracking-tight">Direze</span>
+        <span className="text-white font-semibold text-lg tracking-tight">Groundtruth</span>
         <div className="flex items-center gap-1">
           {links.map(({ href, label, icon: Icon }) => {
             const active = pathname.startsWith(href);

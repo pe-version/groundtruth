@@ -12,10 +12,10 @@ COPY packages/shared/src/ packages/shared/src/
 COPY api/package.json api/
 COPY api/tsconfig.json api/
 
-RUN npm install --workspace=@direze/shared --workspace=direze-api
+RUN npm install --workspace=@groundtruth/shared --workspace=groundtruth-api
 
 COPY api/src/ api/src/
-RUN npm run build --workspace=@direze/shared && npm run build --workspace=direze-api
+RUN npm run build --workspace=@groundtruth/shared && npm run build --workspace=groundtruth-api
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-alpine

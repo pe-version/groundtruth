@@ -5,7 +5,7 @@ import {
   type Logger,
   type MongoDB,
   type VectorStore,
-} from "@direze/shared";
+} from "@groundtruth/shared";
 import { processDocument } from "./processor.js";
 import type { DeadLetterQueue } from "./dlq.js";
 

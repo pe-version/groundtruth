@@ -12,7 +12,7 @@ vi.mock("../src/pdf-extract.js", () => ({
 }));
 
 // Mock embeddings
-vi.mock("@direze/shared", async () => {
+vi.mock("@groundtruth/shared", async () => {
   return {
     DocumentStatus: {
       Pending: "pending",
@@ -27,7 +27,7 @@ vi.mock("@direze/shared", async () => {
 
 import { readFile } from "node:fs/promises";
 import { extractTextFromPDF } from "../src/pdf-extract.js";
-import { embedText } from "@direze/shared";
+import { embedText } from "@groundtruth/shared";
 
 function createMockDb() {
   return {

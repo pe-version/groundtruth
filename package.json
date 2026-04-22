@@ -1,5 +1,5 @@
 {
-  "name": "direze",
+  "name": "groundtruth",
   "private": true,
   "workspaces": ["packages/shared", "api", "consumer", "frontend"],
   "scripts": {

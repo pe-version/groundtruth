@@ -20,7 +20,7 @@ export const apiConfigSchema = baseSchema.extend({
 
 export const consumerConfigSchema = baseSchema.extend({
   KAFKA_BROKERS: z.string().min(1),
-  KAFKA_GROUP_ID: z.string().default("direze-consumer"),
+  KAFKA_GROUP_ID: z.string().default("groundtruth-consumer"),
   UPLOAD_DIR: z.string().default("/tmp/uploads"),
 });
 

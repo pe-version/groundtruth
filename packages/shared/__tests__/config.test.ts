@@ -3,8 +3,8 @@ import { apiConfigSchema, consumerConfigSchema } from "../src/config.js";
 
 describe("apiConfigSchema", () => {
   const validEnv = {
-    MONGO_URI: "mongodb://localhost:27017/direze",
-    POSTGRES_DSN: "postgres://direze:direze@localhost:5432/direze",
+    MONGO_URI: "mongodb://localhost:27017/groundtruth",
+    POSTGRES_DSN: "postgres://groundtruth:groundtruth@localhost:5432/groundtruth",
     OPENAI_API_KEY: "sk-test-key-12345",
     ANTHROPIC_API_KEY: "sk-ant-test-key-12345",
     KAFKA_BROKERS: "localhost:9092",
@@ -36,15 +36,15 @@ describe("apiConfigSchema", () => {
 
 describe("consumerConfigSchema", () => {
   const validEnv = {
-    MONGO_URI: "mongodb://localhost:27017/direze",
-    POSTGRES_DSN: "postgres://direze:direze@localhost:5432/direze",
+    MONGO_URI: "mongodb://localhost:27017/groundtruth",
+    POSTGRES_DSN: "postgres://groundtruth:groundtruth@localhost:5432/groundtruth",
     OPENAI_API_KEY: "sk-test-key-12345",
     KAFKA_BROKERS: "localhost:9092",
   };
 
   it("parses valid config with defaults", () => {
     const config = consumerConfigSchema.parse(validEnv);
-    expect(config.KAFKA_GROUP_ID).toBe("direze-consumer");
+    expect(config.KAFKA_GROUP_ID).toBe("groundtruth-consumer");
     expect(config.UPLOAD_DIR).toBe("/tmp/uploads");
   });
 

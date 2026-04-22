@@ -10,7 +10,7 @@ import { dashboardRoutes } from "../src/routes/dashboard.js";
 
 // --- Mocks ---
 
-vi.mock("@direze/shared", async () => {
+vi.mock("@groundtruth/shared", async () => {
   return {
     DocumentStatus: {
       Pending: "pending",
@@ -136,7 +136,7 @@ describe("Auth routes", () => {
     expect(body.userId).toBe("alice");
     // Should set httpOnly cookie
     const cookies = res.cookies;
-    const tokenCookie = cookies.find((c: { name: string }) => c.name === "direze_token");
+    const tokenCookie = cookies.find((c: { name: string }) => c.name === "groundtruth_token");
     expect(tokenCookie).toBeDefined();
     expect(tokenCookie?.httpOnly).toBe(true);
   });

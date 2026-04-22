@@ -8,7 +8,7 @@ import {
   type VectorStore,
   embedText,
   getUploadPath,
-} from "@direze/shared";
+} from "@groundtruth/shared";
 import { extractTextFromPDF } from "./pdf-extract.js";
 
 const CHUNK_SIZE_TOKENS = 512;

@@ -6,7 +6,7 @@ import multipart from "@fastify/multipart";
 import jwt from "@fastify/jwt";
 import helmet from "@fastify/helmet";
 import cookie from "@fastify/cookie";
-import { loadApiConfig, MongoDB, VectorStore, createLogger } from "@direze/shared";
+import { loadApiConfig, MongoDB, VectorStore, createLogger } from "@groundtruth/shared";
 import { documentRoutes } from "./routes/documents.js";
 import { queryRoutes } from "./routes/query.js";
 import { healthRoutes } from "./routes/health.js";
@@ -50,7 +50,7 @@ async function main() {
   await fastify.register(jwt, {
     secret: config.JWT_SECRET,
     cookie: {
-      cookieName: "direze_token",
+      cookieName: "groundtruth_token",
       signed: false,
     },
   });

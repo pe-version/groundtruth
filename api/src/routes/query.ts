@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { embedText, UUID_REGEX, UUID_PATTERN } from "@direze/shared";
+import { embedText, UUID_REGEX, UUID_PATTERN } from "@groundtruth/shared";
 import { streamClaude } from "../services/anthropic.js";
 
 interface QueryBody {

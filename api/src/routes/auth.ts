@@ -53,7 +53,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       const token = fastify.jwt.sign({ sub: normalized }, { expiresIn: "1h" });
 
       reply
-        .setCookie("direze_token", token, {
+        .setCookie("groundtruth_token", token, {
           path: "/",
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",
@@ -99,7 +99,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       const token = fastify.jwt.sign({ sub: normalized }, { expiresIn: "1h" });
 
       reply
-        .setCookie("direze_token", token, {
+        .setCookie("groundtruth_token", token, {
           path: "/",
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",

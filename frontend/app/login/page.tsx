@@ -36,7 +36,7 @@ export default function LoginPage() {
   return (
     <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center p-8">
       <div className="w-full max-w-sm">
-        <h1 className="text-3xl font-bold mb-2">Sign in to Direze</h1>
+        <h1 className="text-3xl font-bold mb-2">Sign in to Groundtruth</h1>
         <p className="text-gray-400 mb-8">Enter your credentials to continue.</p>
 
         <form onSubmit={handleSubmit} className="space-y-4">

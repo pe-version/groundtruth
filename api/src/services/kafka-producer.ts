@@ -1,5 +1,5 @@
 import { Kafka, type Producer } from "kafkajs";
-import type { KafkaDocumentEvent } from "@direze/shared";
+import type { KafkaDocumentEvent } from "@groundtruth/shared";
 
 const TOPIC = "raw-docs";
 
@@ -13,7 +13,7 @@ export class KafkaProducer {
 
   constructor(brokers: string) {
     this.kafka = new Kafka({
-      clientId: "direze-api",
+      clientId: "groundtruth-api",
       brokers: brokers.split(",").map((b) => b.trim()),
     });
     this.producer = this.kafka.producer();

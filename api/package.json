@@ -1,5 +1,5 @@
 {
-  "name": "direze-api",
+  "name": "groundtruth-api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
-    "@direze/shared": "*",
+    "@groundtruth/shared": "*",
     "@fastify/cookie": "^9.4.0",
     "@fastify/cors": "^9.0.0",
     "@fastify/helmet": "^13.0.2",

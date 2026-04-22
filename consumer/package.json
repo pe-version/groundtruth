@@ -1,5 +1,5 @@
 {
-  "name": "direze-consumer",
+  "name": "groundtruth-consumer",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@direze/shared": "*",
+    "@groundtruth/shared": "*",
     "kafkajs": "^2.2.4",
     "p-limit": "^6.1.0",
     "js-tiktoken": "^1.0.12",

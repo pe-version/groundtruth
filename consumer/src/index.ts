@@ -1,5 +1,5 @@
 import { Kafka, type EachMessagePayload } from "kafkajs";
-import { loadConsumerConfig, MongoDB, VectorStore, createLogger } from "@direze/shared";
+import { loadConsumerConfig, MongoDB, VectorStore, createLogger } from "@groundtruth/shared";
 import { DeadLetterQueue } from "./dlq.js";
 import { handleMessage } from "./handle-message.js";
 
@@ -11,7 +11,7 @@ async function main() {
   const vectorStore = await VectorStore.connect(config.POSTGRES_DSN);
 
   const kafka = new Kafka({
-    clientId: "direze-consumer",
+    clientId: "groundtruth-consumer",
     brokers: config.KAFKA_BROKERS.split(",").map((b) => b.trim()),
   });
 

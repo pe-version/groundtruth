@@ -12,10 +12,10 @@ COPY packages/shared/src/ packages/shared/src/
 COPY consumer/package.json consumer/
 COPY consumer/tsconfig.json consumer/
 
-RUN npm install --workspace=@direze/shared --workspace=direze-consumer
+RUN npm install --workspace=@groundtruth/shared --workspace=groundtruth-consumer
 
 COPY consumer/src/ consumer/src/
-RUN npm run build --workspace=@direze/shared && npm run build --workspace=direze-consumer
+RUN npm run build --workspace=@groundtruth/shared && npm run build --workspace=groundtruth-consumer
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-alpine

@@ -5,7 +5,7 @@ vi.mock("../src/processor.js", () => ({
   processDocument: vi.fn(),
 }));
 
-vi.mock("@direze/shared", () => ({
+vi.mock("@groundtruth/shared", () => ({
   DocumentStatus: {
     Pending: "pending",
     Processing: "processing",

@@ -29,7 +29,7 @@ services:
     ports:
       - "27017:27017"
     environment:
-      MONGO_INITDB_DATABASE: direze
+      MONGO_INITDB_DATABASE: groundtruth
     volumes:
       - mongo_data:/data/db
 
@@ -38,9 +38,9 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: direze
-      POSTGRES_USER: direze
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-direze}
+      POSTGRES_DB: groundtruth
+      POSTGRES_USER: groundtruth
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-groundtruth}
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./infra/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -54,8 +54,8 @@ services:
     environment:
       PORT: 8080
       KAFKA_BROKERS: kafka:29092
-      MONGO_URI: mongodb://mongo:27017/direze
-      POSTGRES_DSN: postgres://direze:${POSTGRES_PASSWORD:-direze}@postgres:5432/direze?sslmode=disable
+      MONGO_URI: mongodb://mongo:27017/groundtruth
+      POSTGRES_DSN: postgres://groundtruth:${POSTGRES_PASSWORD:-groundtruth}@postgres:5432/groundtruth?sslmode=disable
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       JWT_SECRET: ${JWT_SECRET}
@@ -69,9 +69,9 @@ services:
     depends_on: [kafka, mongo, postgres]
     environment:
       KAFKA_BROKERS: kafka:29092
-      KAFKA_GROUP_ID: direze-consumer
-      MONGO_URI: mongodb://mongo:27017/direze
-      POSTGRES_DSN: postgres://direze:${POSTGRES_PASSWORD:-direze}@postgres:5432/direze?sslmode=disable
+      KAFKA_GROUP_ID: groundtruth-consumer
+      MONGO_URI: mongodb://mongo:27017/groundtruth
+      POSTGRES_DSN: postgres://groundtruth:${POSTGRES_PASSWORD:-groundtruth}@postgres:5432/groundtruth?sslmode=disable
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       UPLOAD_DIR: /tmp/uploads
     volumes:

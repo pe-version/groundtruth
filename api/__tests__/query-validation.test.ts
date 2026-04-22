@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { UUID_REGEX, UUID_PATTERN } from "@direze/shared";
+import { UUID_REGEX, UUID_PATTERN } from "@groundtruth/shared";
 
 describe("UUID validation (from shared)", () => {
   it("accepts valid UUIDs", () => {
