@@ -64,7 +64,7 @@ A production-architecture document Q&A platform. Upload PDFs, ask questions, get
 | Consumer | Node.js, KafkaJS, TypeScript |
 | LLM | Anthropic Claude (claude-sonnet-4-20250514) |
 | Embeddings | OpenAI text-embedding-3-small |
-| Message broker | Apache Kafka |
+| Message broker | Apache Kafka (KRaft mode, single-node) |
 | Vector store | Postgres + pgvector extension |
 | Document metadata | MongoDB |
 | Auth | JWT (HS256) + NextAuth.js + optional GitHub OAuth |
@@ -89,8 +89,8 @@ cp .env.example .env
 ### 2. Start infrastructure
 
 ```bash
-docker-compose up -d zookeeper kafka mongo postgres
-# Wait ~15s for Kafka to be ready
+docker-compose up -d kafka mongo postgres
+# Kafka has a healthcheck; dependents wait on it automatically.
 ```
 
 ### 3. Install dependencies
@@ -224,6 +224,27 @@ Auth uses a unified approach: the API issues JWTs (HS256) backed by MongoDB user
 - The endpoint uses `timingSafeEqual` for secret comparison, preventing timing-based enumeration.
 - The endpoint is rate-limited to 30 req/min — well above legitimate traffic (one call per OAuth login) but low enough to make brute-force impractical.
 - If `OAUTH_SERVER_SECRET` is not configured, the endpoint returns 503. OAuth login is unavailable rather than falling back to an insecure path.
+
+### ADR: Kafka broker — KRaft mode, no ZooKeeper, not Redpanda
+
+**Decision:** Run a single-node Apache Kafka broker in **KRaft mode** (combined controller+broker role). ZooKeeper is not used. Redpanda was evaluated and the project stayed on Apache Kafka.
+
+**Context:** The project needs a durable async message broker to decouple upload-time HTTP requests from PDF processing. The original compose shipped the canonical Confluent pattern: ZooKeeper + Kafka. ZK is now legacy — KRaft is the default metadata quorum for Apache Kafka since 3.5, and ZooKeeper support was removed entirely in Kafka 4.0 (2025). Three options were considered:
+
+| Option | How it works | Why rejected / chosen |
+|---|---|---|
+| ZooKeeper + Kafka (original) | Separate ZK ensemble stores Kafka metadata. Kafka coordinates through ZK. | **Rejected.** ZK is removed in Kafka 4.x; shipping a new project on it in 2026 is backfilling toward deprecated infra. Two containers where one now suffices, with no offsetting benefit for a dev/demo topology. |
+| Redpanda | Kafka-wire-compatible single binary in Go/C++. No JVM, no ZK, no KRaft config. | **Considered.** Excellent engineering — thread-per-core runtime, lower memory footprint, faster cold-start, and a genuinely elegant operational story. For this project the deciding factor was ecosystem alignment: Apache Kafka has the broader operator ecosystem (Strimzi, MSK, Confluent Platform), the longer public incident-postmortem record, and unambiguous OSI-approved licensing. Those factors matter more here than the footprint savings. Redpanda would be a reasonable choice for a project where operational simplicity is the primary constraint. |
+| **Apache Kafka in KRaft mode** | Single broker serves both `broker` and `controller` roles; a Raft-based metadata quorum replaces ZK. | **Chosen.** Current default Kafka architecture, one container, no legacy infra, same client libraries and operational surface as Kafka at scale. |
+
+**Implementation notes (see `docker-compose.yml`):**
+- `KAFKA_PROCESS_ROLES=broker,controller` — combined mode is supported for dev/test; production deployments should separate the roles across nodes to isolate metadata availability from broker availability.
+- Three listeners: `PLAINTEXT` (intra-cluster / container-to-container), `CONTROLLER` (KRaft quorum), `PLAINTEXT_HOST` (external clients on the host). Each has a distinct port so listener role is unambiguous.
+- `CLUSTER_ID` is a stable base64url UUID pinned in the compose file. The `cp-kafka` entrypoint formats the KRaft log dir on first boot when this env var is set, avoiding a manual `kafka-storage format` step.
+- Internal topics (`__consumer_offsets`, transaction state log) are forced to replication factor 1 via `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR` / `KAFKA_TRANSACTION_STATE_LOG_*`. The defaults are 3, which would fail to create on a single-broker cluster. Production multi-broker deployments must raise these back to 3 with `min.insync.replicas=2`.
+- A `healthcheck` using `kafka-broker-api-versions` gates the `api` and `consumer` service startup via `depends_on: { condition: service_healthy }`, so dependents only start once the broker is accepting client API calls.
+- Log data is persisted to a named `kafka_data` volume so topic contents and KRaft metadata survive container restarts.
+- PLAINTEXT is used throughout because all traffic is inside the Docker bridge network on the developer's laptop. Production must switch to SASL+TLS listeners (`SASL_SSL`) with per-client credentials and a proper cert chain.
 
 ## Kafka Topics
 

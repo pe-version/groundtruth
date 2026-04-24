@@ -1,27 +1,54 @@
-version: "3.9"
-
 services:
   # ─── Message Broker ─────────────────────────────────────────────
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.0
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-    ports:
-      - "2181:2181"
-
+  # Single-node Kafka in KRaft mode (no ZooKeeper). The broker acts as both
+  # controller and broker via KAFKA_PROCESS_ROLES=broker,controller, which
+  # is supported for dev/test topologies; production deployments should
+  # separate the roles onto distinct nodes. See README § "Broker choice".
   kafka:
     image: confluentinc/cp-kafka:7.6.0
-    depends_on: [zookeeper]
     ports:
+      # Host-side clients (dev servers running outside Docker) connect here.
       - "9092:9092"
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      # --- KRaft identity & quorum ------------------------------------
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      # Static cluster UUID. The cp-kafka entrypoint formats the log dir
+      # on first boot when CLUSTER_ID is set, so no manual kafka-storage
+      # format step is required. Generated via base64url(uuid4()).
+      CLUSTER_ID: "T0GDfWiiTqy-hMt0ilP_Hg"
+      # --- Listeners --------------------------------------------------
+      # Three listeners, each with a distinct role:
+      #   PLAINTEXT       — intra-cluster + container-to-container (kafka:29092)
+      #   CONTROLLER      — KRaft quorum traffic (kafka:29093)
+      #   PLAINTEXT_HOST  — external clients on the host (localhost:9092)
+      KAFKA_LISTENERS: "PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      # --- Single-node safety knobs -----------------------------------
+      # Internal topics default to RF=3, which would fail on a 1-broker
+      # cluster. Override to 1 for dev. Production must raise these.
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Skip the default 3s group-join delay for snappier local startup.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      # Persist log segments + KRaft metadata across container restarts.
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      # `kafka-broker-api-versions` succeeds only after the broker has
+      # finished KRaft formatting and is accepting client API calls —
+      # a stronger signal than a TCP probe on 9092.
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   # ─── Databases ───────────────────────────────────────────────────
   mongo:
@@ -50,7 +77,13 @@ services:
     build: ./api
     ports:
       - "8080:8080"
-    depends_on: [kafka, mongo, postgres]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mongo:
+        condition: service_started
+      postgres:
+        condition: service_started
     environment:
       PORT: 8080
       KAFKA_BROKERS: kafka:29092
@@ -66,7 +99,13 @@ services:
 
   consumer:
     build: ./consumer
-    depends_on: [kafka, mongo, postgres]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mongo:
+        condition: service_started
+      postgres:
+        condition: service_started
     environment:
       KAFKA_BROKERS: kafka:29092
       KAFKA_GROUP_ID: groundtruth-consumer
@@ -86,6 +125,7 @@ services:
       NEXT_PUBLIC_API_URL: http://api:8080/api
 
 volumes:
+  kafka_data:
   mongo_data:
   pg_data:
   uploads:
