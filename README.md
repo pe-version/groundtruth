@@ -2,6 +2,8 @@
 
 A production-architecture document Q&A platform. Upload PDFs, ask questions, get answers grounded in the source text.
 
+*Built via Claude-augmented development.*
+
 ## Architecture
 
 ```
