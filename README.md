@@ -82,7 +82,7 @@ A production-architecture document Q&A platform. Upload PDFs, ask questions, get
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/yourname/groundtruth
+git clone https://github.com/pe-version/groundtruth
 cd groundtruth
 cp .env.example .env
 # Edit .env and set ANTHROPIC_API_KEY, OPENAI_API_KEY, and JWT_SECRET
@@ -136,9 +136,11 @@ groundtruth/
 │   └── src/
 │       ├── types.ts                  # Document, User, Chunk, event interfaces
 │       ├── config.ts                 # Zod-validated environment config
+│       ├── logger.ts                 # Shared pino structured logger factory
 │       ├── mongo.ts                  # MongoDB client (documents + users)
 │       ├── vector-store.ts           # pgvector client (insert, search, delete)
 │       ├── embedding.ts              # OpenAI embedding client (DRY)
+│       ├── storage.ts                # Single source of truth for upload path layout
 │       ├── validation.ts             # Shared UUID_REGEX (DRY across routes)
 │       └── index.ts                  # Barrel export
 │
@@ -154,12 +156,15 @@ groundtruth/
 │       │   └── health.ts             # Health check
 │       └── services/
 │           ├── anthropic.ts          # Claude chat completion
+│           ├── janitor.ts            # Periodic cleanup of orphaned uploads + vectors
 │           └── kafka-producer.ts     # KafkaJS producer
 │
 ├── consumer/                         # Kafka consumer
 │   └── src/
 │       ├── index.ts                  # Consumer entrypoint + heartbeat + graceful shutdown
+│       ├── handle-message.ts         # Per-message handler (validates, dispatches, DLQs)
 │       ├── processor.ts              # Pipeline: extract → chunk → embed → index
+│       ├── dlq.ts                    # Dead-letter queue producer (raw-docs-dlq)
 │       └── pdf-extract.ts            # PDF text extraction (pdf-parse)
 │
 ├── frontend/                         # Next.js app
