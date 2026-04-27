@@ -33,7 +33,7 @@ export async function* streamClaude(
   const userPrompt = `Document excerpts:\n\n${context}\n\nQuestion: ${question}`;
 
   const stream = getClient().messages.stream({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-6",
     max_tokens: 1024,
     system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: userPrompt }],

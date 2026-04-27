@@ -64,7 +64,7 @@ A production-architecture document Q&A platform. Upload PDFs, ask questions, get
 | Frontend | Next.js 14, TypeScript, Tailwind |
 | API | Node.js, Fastify, TypeScript |
 | Consumer | Node.js, KafkaJS, TypeScript |
-| LLM | Anthropic Claude (claude-sonnet-4-20250514) |
+| LLM | Anthropic Claude (claude-sonnet-4-6) |
 | Embeddings | OpenAI text-embedding-3-small |
 | Message broker | Apache Kafka (KRaft mode, single-node) |
 | Vector store | Postgres + pgvector extension |
@@ -195,7 +195,7 @@ groundtruth/
 Auth uses a unified approach: the API issues JWTs (HS256) backed by MongoDB user storage, and the frontend session carries that same token. All API calls use it via `Authorization: Bearer` header plus an httpOnly cookie fallback.
 
 **Credentials flow:**
-1. User registers at `/register` → API hashes password (bcrypt, 10 rounds) and stores in MongoDB `users` collection
+1. User registers at `/register` → API hashes password (bcrypt, 12 rounds) and stores in MongoDB `users` collection
 2. Login → API validates against hash, issues 1h JWT
 3. NextAuth stores the token in its session; `AuthProvider` syncs it to the API client on every session change
 4. Next.js `middleware.ts` redirects unauthenticated users to `/login` before any page renders

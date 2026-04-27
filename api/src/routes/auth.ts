@@ -2,7 +2,10 @@ import bcrypt from "bcryptjs";
 import { timingSafeEqual } from "crypto";
 import type { FastifyInstance } from "fastify";
 
-const SALT_ROUNDS = 10;
+// 12 rounds aligns with current OWASP guidance for bcrypt — roughly 2× the
+// work factor of the bcryptjs default of 10. Hash time stays well under
+// one second on modern hardware, acceptable for interactive register/login.
+const SALT_ROUNDS = 12;
 
 // Usernames are restricted to a narrow charset so they can never collide with
 // the OAuth id namespace (`provider:providerId`) or trip Unicode-normalization
