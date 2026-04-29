@@ -38,6 +38,7 @@ function createMockLlm() {
 function createMockDb() {
   const users = new Map<string, { _id: string; passwordHash: string; oauthProvider?: string; createdAt: Date }>();
   return {
+    ping: vi.fn().mockResolvedValue(undefined),
     insertDocument: vi.fn().mockResolvedValue(undefined),
     getDocument: vi.fn().mockResolvedValue(null),
     listDocuments: vi.fn().mockResolvedValue([]),
@@ -70,32 +71,48 @@ function createMockJobQueue() {
   return {
     enqueue: vi.fn().mockResolvedValue("job-id-mock"),
     fetchOne: vi.fn().mockResolvedValue(null),
+    heartbeat: vi.fn().mockResolvedValue(undefined),
     complete: vi.fn().mockResolvedValue(undefined),
     fail: vi.fn().mockResolvedValue(undefined),
+    retryOrFail: vi.fn().mockResolvedValue("retried"),
     close: vi.fn().mockResolvedValue(undefined),
   };
 }
 
 function createMockRefreshTokens() {
-  // In-memory store: hash → { userId, expiresAt, raw }. The mock returns
-  // the raw cleartext on issue() and looks it up on find()/revoke().
-  const tokens = new Map<string, { userId: string; expiresAt: Date }>();
+  // In-memory store mimicking the atomic consume() + replay-detection
+  // shape of the real RefreshTokenStore. Live tokens map → user; consumed
+  // history is a separate Set so replay detection works in tests.
+  const live = new Map<string, { userId: string; expiresAt: Date }>();
+  const consumed = new Map<string, { userId: string; expiresAt: Date }>();
   let counter = 0;
   return {
     issue: vi.fn(async (userId: string) => {
       const token = `mock-refresh-${++counter}`;
-      tokens.set(token, {
-        userId,
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      });
-      return { token, expiresAt: tokens.get(token)!.expiresAt };
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      live.set(token, { userId, expiresAt });
+      return { token, expiresAt };
     }),
-    find: vi.fn(async (token: string) => tokens.get(token) ?? null),
+    consume: vi.fn(async (token: string) => {
+      const row = live.get(token);
+      if (row) {
+        live.delete(token);
+        consumed.set(token, row);
+        return { kind: "ok" as const, userId: row.userId };
+      }
+      const replay = consumed.get(token);
+      if (replay) return { kind: "replay" as const, userId: replay.userId };
+      return { kind: "missing" as const };
+    }),
     revoke: vi.fn(async (token: string) => {
-      tokens.delete(token);
+      live.delete(token);
     }),
-    revokeAllForUser: vi.fn(async () => undefined),
-    pruneExpired: vi.fn(async () => 0),
+    revokeAllForUser: vi.fn(async (userId: string) => {
+      for (const [tok, row] of live) {
+        if (row.userId === userId) live.delete(tok);
+      }
+    }),
+    pruneExpired: vi.fn(async () => ({ active: 0, consumed: 0 })),
     close: vi.fn(async () => undefined),
   };
 }

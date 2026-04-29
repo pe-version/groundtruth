@@ -23,6 +23,12 @@ export class MetadataStore {
     await this.pool.end();
   }
 
+  // Cheap connectivity probe used by /health. SELECT 1 doesn't touch any
+  // table; it confirms the pool is alive and the server is responsive.
+  async ping(): Promise<void> {
+    await this.pool.query("SELECT 1");
+  }
+
   // ── User store ──────────────────────────────────────────────────────────
 
   async createUser(username: string, passwordHash: string): Promise<void> {

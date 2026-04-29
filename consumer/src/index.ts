@@ -24,6 +24,11 @@ async function main() {
 
   log.info({ workerId, pollIntervalMs: config.POLL_INTERVAL_MS }, "Consumer started");
 
+  // Heartbeat cadence: a healthy job updates locked_at every HEARTBEAT_MS
+  // so the queue's stale-lock timer doesn't reclaim a slow-but-progressing
+  // worker. Pick a value well under JobQueue.staleAfterMs (default 5 min).
+  const HEARTBEAT_MS = 30_000;
+
   let running = true;
   let activeJob: Promise<unknown> | null = null;
 
@@ -53,14 +58,34 @@ async function main() {
     }
 
     activeJob = (async () => {
-      const result = await handleJob(
-        { db, vectorStore, uploadDir: config.UPLOAD_DIR, log },
-        job
-      );
-      if (result.success) {
-        await queue.complete(job.id);
-      } else {
-        await queue.fail(job.id, result.errorMessage ?? "unknown error");
+      // Heartbeat ticker — refreshes locked_at every HEARTBEAT_MS so a
+      // long-but-progressing job isn't mistaken for stuck. Failures on
+      // the heartbeat itself are logged but never block forward progress.
+      const heartbeatTimer = setInterval(() => {
+        queue.heartbeat(job.id).catch((err) => {
+          log.warn({ err, jobId: job.id }, "Heartbeat update failed");
+        });
+      }, HEARTBEAT_MS);
+
+      try {
+        const result = await handleJob(
+          { db, vectorStore, uploadDir: config.UPLOAD_DIR, log },
+          job
+        );
+        if (result.success) {
+          await queue.complete(job.id);
+          return;
+        }
+        const errMsg = result.errorMessage ?? "unknown error";
+        if (result.failureKind === "transient") {
+          const outcome = await queue.retryOrFail(job.id, errMsg);
+          log.info({ jobId: job.id, outcome }, "Transient failure handled");
+        } else {
+          // Permanent — terminate immediately, no retries.
+          await queue.fail(job.id, errMsg);
+        }
+      } finally {
+        clearInterval(heartbeatTimer);
       }
     })();
     await activeJob;

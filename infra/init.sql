@@ -41,6 +41,15 @@ CREATE TABLE IF NOT EXISTS document_jobs (
     filename      TEXT        NOT NULL,
     status        TEXT        NOT NULL DEFAULT 'pending',
     attempts      INT         NOT NULL DEFAULT 0,
+    -- Cap total tries (initial + retries). When attempts >= max_attempts
+    -- on a transient failure, the job becomes terminal-failed instead
+    -- of being re-queued. Permanent failures (corrupt PDF, etc.) flip
+    -- straight to 'failed' regardless and do not consume retries.
+    max_attempts  INT         NOT NULL DEFAULT 3,
+    -- Retry backoff: a job is only claimable once NOW() >= run_after.
+    -- Setting this on a transient failure pushes the next attempt out
+    -- exponentially without busy-spinning the worker.
+    run_after     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     locked_at     TIMESTAMPTZ,
     locked_by     TEXT,
     error_message TEXT,
@@ -50,9 +59,11 @@ CREATE TABLE IF NOT EXISTS document_jobs (
 
 -- Partial index: fetchOne() scans only pending or stale-processing rows,
 -- so a partial index is both smaller than a full one and lets the planner
--- skip completed/failed rows entirely.
+-- skip completed/failed rows entirely. We index `run_after` (not
+-- created_at) so backed-off retries sort to the back of the line and a
+-- stuck-but-retryable row never starves fresh work.
 CREATE INDEX IF NOT EXISTS document_jobs_claimable_idx
-    ON document_jobs (created_at)
+    ON document_jobs (run_after)
     WHERE status = 'pending' OR status = 'processing';
 
 -- ── Refresh tokens ──────────────────────────────────────────────────────────
@@ -73,6 +84,23 @@ CREATE INDEX IF NOT EXISTS refresh_tokens_user_idx
 -- Lets a periodic janitor drop expired rows in O(log n).
 CREATE INDEX IF NOT EXISTS refresh_tokens_expiry_idx
     ON refresh_tokens (expires_at);
+
+-- Replay detection: every successful rotation moves the consumed token's
+-- hash here. If a later /auth/refresh presents a hash that's missing from
+-- refresh_tokens AND present here, that's a replay → all of the user's
+-- live refresh tokens get revoked.
+--
+-- The history is short-lived (the janitor reaps it on the same TTL as the
+-- original token) so this table never grows large.
+CREATE TABLE IF NOT EXISTS consumed_refresh_tokens (
+    token_hash    TEXT        PRIMARY KEY,
+    user_id       TEXT        NOT NULL,
+    consumed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at    TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS consumed_refresh_tokens_expiry_idx
+    ON consumed_refresh_tokens (expires_at);
 
 -- ── Users ───────────────────────────────────────────────────────────────────
 -- Replaces the MongoDB users collection. The id is the canonical user

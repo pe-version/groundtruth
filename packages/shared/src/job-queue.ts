@@ -12,6 +12,13 @@ import { Pool } from "pg";
 //   + Failed jobs ARE the DLQ — `WHERE status = 'failed'` is the query
 //   - Throughput ceiling is Postgres, not a partitioned log; fine for
 //     document ingest (low-thousands/sec) but wrong for event firehoses
+//
+// Failure model:
+//   - Permanent failures (bad PDF, no extractable text) → terminal
+//     'failed' on first error. Retrying would just re-fail.
+//   - Transient failures (network, timeout, OOM-near-miss) → push the
+//     row back to 'pending' with run_after = NOW() + 2^attempts seconds.
+//     After max_attempts the row becomes terminal-failed.
 
 export type JobStatus = "pending" | "processing" | "completed" | "failed";
 
@@ -22,6 +29,7 @@ export interface DocumentJob {
   filename: string;
   status: JobStatus;
   attempts: number;
+  maxAttempts: number;
   errorMessage: string | null;
 }
 
@@ -31,10 +39,16 @@ export interface EnqueueArgs {
   filename: string;
 }
 
+// Caller passes this on a job failure so the queue knows whether to
+// schedule a retry or terminate. Default to permanent — we'd rather not
+// retry a bug than retry-loop a poison pill.
+export type FailKind = "permanent" | "transient";
+
 export class JobQueue {
-  // staleAfterMs: a 'processing' row whose worker died will be re-claimed
+  // staleAfterMs: a 'processing' row whose worker died is re-claimable
   // after its lock has been held this long. Default is generous because
-  // the embedding+index step can run for minutes on a large PDF.
+  // the embedding+index step can run for minutes on a large PDF; the
+  // heartbeat updates locked_at during normal progress.
   private readonly staleAfterMs: number;
 
   constructor(private readonly pool: Pool, opts: { staleAfterMs?: number } = {}) {
@@ -56,9 +70,9 @@ export class JobQueue {
     return rows[0].id;
   }
 
-  // Claim one job atomically. Returns null when the queue is empty.
-  // workerId is recorded on the row so operators can attribute stuck jobs
-  // to a specific worker process during debugging.
+  // Claim one job atomically. Returns null when nothing is claimable
+  // *right now* — pending rows whose run_after is in the future are not
+  // counted (they're back-off-pending after a transient failure).
   async fetchOne(workerId: string): Promise<DocumentJob | null> {
     const { rows } = await this.pool.query<DbRow>(
       `UPDATE document_jobs
@@ -69,16 +83,29 @@ export class JobQueue {
            updated_at  = NOW()
        WHERE id = (
          SELECT id FROM document_jobs
-         WHERE status = 'pending'
+         WHERE (status = 'pending' AND run_after <= NOW())
             OR (status = 'processing' AND locked_at < NOW() - ($2::int || ' milliseconds')::interval)
-         ORDER BY created_at
+         ORDER BY run_after
          LIMIT 1
          FOR UPDATE SKIP LOCKED
        )
-       RETURNING id, document_id, user_id, filename, status, attempts, error_message`,
+       RETURNING id, document_id, user_id, filename, status, attempts, max_attempts, error_message`,
       [workerId, this.staleAfterMs]
     );
     return rows[0] ? toJob(rows[0]) : null;
+  }
+
+  // Heartbeat: long-running jobs call this periodically so the
+  // stale-lock timer doesn't fire on a healthy worker. The status guard
+  // means a heartbeat against a job that's already been completed/failed
+  // (e.g., after a crash + reclaim race) is a no-op.
+  async heartbeat(id: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE document_jobs
+       SET locked_at = NOW(), updated_at = NOW()
+       WHERE id = $1 AND status = 'processing'`,
+      [id]
+    );
   }
 
   async complete(id: string): Promise<void> {
@@ -90,8 +117,8 @@ export class JobQueue {
     );
   }
 
-  // The "DLQ entry": status='failed' is the same row, marked. Operators
-  // inspect with `SELECT * FROM document_jobs WHERE status='failed'`.
+  // Terminal failure. Records the error message; status='failed' is the
+  // DLQ predicate operators query for.
   async fail(id: string, error: string): Promise<void> {
     await this.pool.query(
       `UPDATE document_jobs
@@ -103,6 +130,32 @@ export class JobQueue {
        WHERE id = $1`,
       [id, error.slice(0, 4000)]
     );
+  }
+
+  // Schedule a retry. Caller has already burned one attempt (incremented
+  // on claim); we either set status back to 'pending' with a backoff, or
+  // terminal-fail if no attempts remain. Returns the resolved kind so
+  // the caller can log appropriately.
+  async retryOrFail(
+    id: string,
+    error: string
+  ): Promise<"retried" | "exhausted"> {
+    const { rows } = await this.pool.query<{ status: JobStatus }>(
+      `UPDATE document_jobs
+       SET status = CASE
+                      WHEN attempts < max_attempts THEN 'pending'
+                      ELSE 'failed'
+                    END,
+           locked_at  = NULL,
+           locked_by  = NULL,
+           run_after  = NOW() + (POWER(2, LEAST(attempts, 10)) || ' seconds')::interval,
+           error_message = $2,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING status`,
+      [id, error.slice(0, 4000)]
+    );
+    return rows[0]?.status === "pending" ? "retried" : "exhausted";
   }
 
   async close(): Promise<void> {
@@ -117,6 +170,7 @@ interface DbRow {
   filename: string;
   status: JobStatus;
   attempts: number;
+  max_attempts: number;
   error_message: string | null;
 }
 
@@ -128,6 +182,7 @@ function toJob(row: DbRow): DocumentJob {
     filename: row.filename,
     status: row.status,
     attempts: row.attempts,
+    maxAttempts: row.max_attempts,
     errorMessage: row.error_message,
   };
 }

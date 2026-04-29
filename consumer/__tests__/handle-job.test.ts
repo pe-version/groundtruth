@@ -49,6 +49,7 @@ function makeJob(over: Partial<DocumentJob> = {}): DocumentJob {
     filename: "f.pdf",
     status: "processing",
     attempts: 1,
+    maxAttempts: 3,
     errorMessage: null,
     ...over,
   };
@@ -59,7 +60,7 @@ describe("handleJob", () => {
     vi.clearAllMocks();
   });
 
-  it("flips Pending → Ready on success and returns success=true", async () => {
+  it("flips Pending → Ready on success", async () => {
     const { deps, db } = makeDeps();
     vi.mocked(processDocument).mockResolvedValueOnce(7);
 
@@ -71,25 +72,51 @@ describe("handleJob", () => {
     expect(db.markFailed).not.toHaveBeenCalled();
   });
 
-  it("marks the doc failed and returns success=false on error", async () => {
+  it("classifies a generic Error as permanent and marks the doc failed immediately", async () => {
     const { deps, db } = makeDeps();
     vi.mocked(processDocument).mockRejectedValueOnce(new Error("PDF parse failed"));
 
     const result = await handleJob(deps, makeJob({ documentId: "d2" }));
 
     expect(result.success).toBe(false);
+    expect(result.failureKind).toBe("permanent");
     expect(result.errorMessage).toBe("PDF parse failed");
-    expect(db.updateStatus).toHaveBeenCalledWith("d2", "processing", 0);
     expect(db.markFailed).toHaveBeenCalledWith("d2", "PDF parse failed");
-    expect(db.updateStatus).not.toHaveBeenCalledWith("d2", "ready", expect.anything());
+  });
+
+  it("classifies AbortError as transient and does NOT mark the doc failed yet", async () => {
+    const { deps, db } = makeDeps();
+    const abortErr = new Error("operation aborted");
+    abortErr.name = "AbortError";
+    vi.mocked(processDocument).mockRejectedValueOnce(abortErr);
+
+    const result = await handleJob(deps, makeJob({ documentId: "d3", attempts: 1 }));
+
+    expect(result.success).toBe(false);
+    expect(result.failureKind).toBe("transient");
+    // attempts < maxAttempts → leave doc in 'processing' so the user
+    // sees "still working" while the queue retries with backoff.
+    expect(db.markFailed).not.toHaveBeenCalled();
+  });
+
+  it("transient failure on the LAST attempt does flip the doc to failed", async () => {
+    const { deps, db } = makeDeps();
+    const econn = Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
+    vi.mocked(processDocument).mockRejectedValueOnce(econn);
+
+    const result = await handleJob(
+      deps,
+      makeJob({ documentId: "d4", attempts: 3, maxAttempts: 3 })
+    );
+
+    expect(result.failureKind).toBe("transient");
+    expect(db.markFailed).toHaveBeenCalledWith("d4", "connection reset");
   });
 
   it("never retries internally — one call to processDocument per invocation", async () => {
     const { deps } = makeDeps();
-    vi.mocked(processDocument).mockRejectedValueOnce(new Error("transient?"));
-
+    vi.mocked(processDocument).mockRejectedValueOnce(new Error("boom"));
     await handleJob(deps, makeJob());
-
     expect(processDocument).toHaveBeenCalledTimes(1);
   });
 });

@@ -30,6 +30,24 @@ function normalizeUsername(input: string): string {
   return input.normalize("NFKC").toLowerCase();
 }
 
+// A precomputed argon2id hash of a random sentinel value. We run
+// `argon2Verify(SENTINEL_HASH, ...)` on the missing-user branch of
+// /auth/login so the timing of "user doesn't exist" matches "user
+// exists, password wrong" (~100ms). Without this, a remote attacker
+// can enumerate valid usernames just by measuring response time.
+//
+// Lazily computed on first use so the cost lands once at module-warm
+// time, not at every cold boot.
+let sentinelHashPromise: Promise<string> | null = null;
+function getSentinelHash(): Promise<string> {
+  if (!sentinelHashPromise) {
+    sentinelHashPromise = argon2Hash(
+      "groundtruth-login-timing-sentinel-not-a-real-password"
+    );
+  }
+  return sentinelHashPromise;
+}
+
 function setAuthCookies(
   reply: FastifyReply,
   accessToken: string,
@@ -129,20 +147,27 @@ export async function authRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const normalized = normalizeUsername(request.body.username);
-
       const user = await fastify.db.getUser(normalized);
-      if (!user || !user.passwordHash) {
-        return reply.code(401).send({ error: "Invalid credentials" });
+
+      // Constant-time-ish branching: we always run an argon2Verify so a
+      // missing user takes the same wall-clock time as a wrong password.
+      // The verify is against a sentinel hash on the missing-user path,
+      // and against the user's real hash otherwise. Either way the
+      // result decides authentication via a single boolean below.
+      const hashToCheck =
+        user && user.passwordHash ? user.passwordHash : await getSentinelHash();
+
+      let verified = false;
+      try {
+        verified = await argon2Verify(hashToCheck, request.body.password);
+      } catch {
+        verified = false;
       }
 
-      // argon2.verify throws on malformed hashes; the catch lets a missing
-      // or empty hash field naturally fail closed.
-      let valid = false;
-      try {
-        valid = await argon2Verify(user.passwordHash, request.body.password);
-      } catch {
-        valid = false;
-      }
+      // OAuth-provisioned users have an empty passwordHash and so always
+      // fall through to the sentinel branch — they cannot authenticate
+      // via /auth/login regardless of timing.
+      const valid = !!user && !!user.passwordHash && verified;
       if (!valid) {
         return reply.code(401).send({ error: "Invalid credentials" });
       }
@@ -151,11 +176,16 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // Refresh: read the refresh cookie, mint a new access token, ROTATE the
-  // refresh token (delete old, issue new). Single-use refresh tokens make
-  // theft detectable: if both the legitimate user and an attacker present
-  // the same refresh token, the second one to arrive sees a 401 and the
-  // owner's session continues.
+  // Refresh: atomically consume the presented refresh token and mint a
+  // new pair. The consume() call performs the DELETE-RETURNING in a
+  // single statement, so two concurrent /auth/refresh calls racing on
+  // the same cookie cannot both succeed.
+  //
+  // If the same token is presented a second time, consume() reports a
+  // *replay* — the cleartext is in two places that shouldn't both have
+  // it. We revoke every refresh token for that user, forcing the
+  // legitimate session to re-authenticate. Painful, but correct: a
+  // replayed refresh token means the secret leaked.
   fastify.post(
     "/auth/refresh",
     {
@@ -170,18 +200,24 @@ export async function authRoutes(fastify: FastifyInstance) {
         return reply.code(401).send({ error: "No refresh token" });
       }
 
-      const found = await fastify.refreshTokens.find(cookie);
-      if (!found) {
-        // Clear the stale cookie so the client doesn't keep retrying.
+      const outcome = await fastify.refreshTokens.consume(cookie);
+
+      if (outcome.kind === "replay") {
+        request.log.warn(
+          { userId: outcome.userId },
+          "Refresh-token replay detected; revoking all sessions for user"
+        );
+        await fastify.refreshTokens.revokeAllForUser(outcome.userId);
+        clearAuthCookies(reply);
+        return reply.code(401).send({ error: "Session revoked" });
+      }
+
+      if (outcome.kind === "missing") {
         clearAuthCookies(reply);
         return reply.code(401).send({ error: "Invalid refresh token" });
       }
 
-      // Rotate: revoke the presented token before issuing a new one. If
-      // the same token is presented twice (replay), the second attempt
-      // hits the 401 path above.
-      await fastify.refreshTokens.revoke(cookie);
-      return reply.send(await issueSession(found.userId, reply));
+      return reply.send(await issueSession(outcome.userId, reply));
     }
   );
 

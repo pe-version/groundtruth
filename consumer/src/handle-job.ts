@@ -16,13 +16,18 @@ export interface HandleJobDeps {
 
 export interface JobResult {
   success: boolean;
+  // When false, indicates whether the failure looks transient (caller
+  // should let the queue back-off-retry) or permanent (caller should
+  // mark terminal-failed). Default to permanent — we'd rather have a
+  // retry path go unused than retry-loop a poison pill.
+  failureKind?: "permanent" | "transient";
   errorMessage?: string;
 }
 
-// Process a single dequeued job. Returns success/failure to the caller
-// (the poll loop) which is responsible for marking the job row in the
-// queue. Splitting it this way keeps the queue concerns out of the
-// document-processing logic and makes both individually testable.
+// Process a single dequeued job. Returns success/failure + the kind of
+// failure to the caller (the poll loop), which is responsible for
+// marking the job row. Splitting it this way keeps queue concerns out
+// of the document-processing logic and makes both individually testable.
 export async function handleJob(
   deps: HandleJobDeps,
   job: DocumentJob
@@ -33,6 +38,7 @@ export async function handleJob(
     documentId: job.documentId,
     userId: job.userId,
     attempt: job.attempts,
+    maxAttempts: job.maxAttempts,
   });
 
   log.info({ filename: job.filename }, "Processing document");
@@ -49,13 +55,43 @@ export async function handleJob(
     log.info({ chunkCount }, "Document processed");
     return { success: true };
   } catch (err) {
-    // Fail-fast: no in-process retries. The job-row's `error_message` and
-    // status='failed' is the post-mortem record. Users recover by
-    // re-uploading; operators inspect with
-    //   SELECT * FROM document_jobs WHERE status='failed';
     const error = err instanceof Error ? err : new Error(String(err));
-    log.error({ err: error }, "Processing failed");
-    await db.markFailed(job.documentId, error.message);
-    return { success: false, errorMessage: error.message };
+    const failureKind = classifyFailure(error);
+    log.error({ err: error, failureKind }, "Processing failed");
+    // Only flip the user-visible doc status to 'failed' when the queue
+    // has actually given up (permanent OR retries exhausted). On a
+    // transient failure we leave the doc in 'processing' so the user
+    // sees "still working" rather than a flapping status.
+    if (failureKind === "permanent" || job.attempts >= job.maxAttempts) {
+      await db.markFailed(job.documentId, error.message);
+    }
+    return { success: false, failureKind, errorMessage: error.message };
   }
+}
+
+// Classify a thrown error as worth retrying (transient) or not. Default
+// permanent so an unknown error type doesn't accidentally retry-loop —
+// add cases here only when you know the error is reliably retryable.
+function classifyFailure(err: Error): "permanent" | "transient" {
+  // AbortError comes from our per-stage AbortController timeouts. A
+  // hung embed call is exactly the kind of transient that benefits from
+  // backoff retry.
+  if (err.name === "AbortError") return "transient";
+
+  // OpenAI/HTTP-style errors that pg/fetch surface as ECONN*/ENETDOWN
+  // are network-side and worth retrying.
+  const code = (err as Error & { code?: string }).code;
+  if (
+    code === "ECONNRESET" ||
+    code === "ECONNREFUSED" ||
+    code === "ETIMEDOUT" ||
+    code === "ENETDOWN" ||
+    code === "EAI_AGAIN"
+  ) {
+    return "transient";
+  }
+
+  // Everything else is treated as a content/data problem: bad PDF,
+  // empty extraction, parser panic. Retrying won't help.
+  return "permanent";
 }
