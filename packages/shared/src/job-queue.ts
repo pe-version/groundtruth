@@ -158,9 +158,40 @@ export class JobQueue {
     return rows[0]?.status === "pending" ? "retried" : "exhausted";
   }
 
+  // Cheap roll-up for /metrics. Two indexed counts + a min(); runs on
+  // every metrics-refresh tick (5s default) without measurable load.
+  async stats(): Promise<QueueStats> {
+    const { rows } = await this.pool.query<{
+      pending_count: string;
+      failed_count: string;
+      oldest_pending_age_seconds: string | null;
+    }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'pending')::text AS pending_count,
+         COUNT(*) FILTER (WHERE status = 'failed')::text  AS failed_count,
+         EXTRACT(EPOCH FROM (NOW() - MIN(created_at) FILTER (WHERE status = 'pending')))::text
+           AS oldest_pending_age_seconds
+       FROM document_jobs`
+    );
+    const r = rows[0];
+    return {
+      pendingCount: Number(r.pending_count),
+      failedCount: Number(r.failed_count),
+      oldestPendingAgeSeconds: r.oldest_pending_age_seconds
+        ? Number(r.oldest_pending_age_seconds)
+        : 0,
+    };
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }
+}
+
+export interface QueueStats {
+  pendingCount: number;
+  failedCount: number;
+  oldestPendingAgeSeconds: number;
 }
 
 interface DbRow {

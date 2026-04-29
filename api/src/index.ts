@@ -14,6 +14,11 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { JwtService } from "./services/jwt.js";
 import { AnthropicProvider } from "./services/anthropic.js";
 import { startJanitor } from "./services/janitor.js";
+import {
+  getMetricsRegistry,
+  instrumentHttp,
+  startMetricsRefresh,
+} from "./services/metrics.js";
 
 async function main() {
   const config = loadApiConfig();
@@ -104,6 +109,24 @@ async function main() {
     request.log = request.log.child({ userId: request.user.sub });
   });
 
+  // --- Observability -----------------------------------------------------
+  //
+  // Metrics live outside the auth-protected /api scope so a Prometheus
+  // scrape doesn't need to authenticate. In production the route would
+  // be firewalled to the metrics-collector ingress only — that's an
+  // ops-layer concern, not an app concern.
+  instrumentHttp(fastify);
+  fastify.get(
+    "/metrics",
+    { config: { public: true } },
+    async (_request, reply) => {
+      const registry = getMetricsRegistry();
+      reply.header("Content-Type", registry.contentType);
+      return registry.metrics();
+    }
+  );
+  const stopMetricsRefresh = startMetricsRefresh(jobQueue);
+
   // --- Routes -------------------------------------------------------------
 
   await fastify.register(healthRoutes);
@@ -132,6 +155,7 @@ async function main() {
   const shutdown = async () => {
     fastify.log.info("Shutting down...");
     stopJanitor();
+    stopMetricsRefresh();
     try { await fastify.close(); } catch (err) { fastify.log.error(err, "Error closing Fastify"); }
     try { await jobQueue.close(); } catch (err) { fastify.log.error(err, "Error closing JobQueue"); }
     try { await refreshTokens.close(); } catch (err) { fastify.log.error(err, "Error closing RefreshTokenStore"); }

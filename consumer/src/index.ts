@@ -7,6 +7,7 @@ import {
   createLogger,
 } from "@groundtruth/shared";
 import { handleJob } from "./handle-job.js";
+import { jobDurationSeconds, jobsTotal, startMetricsServer } from "./metrics.js";
 
 async function main() {
   const config = loadConsumerConfig();
@@ -23,6 +24,11 @@ async function main() {
   const queue = await JobQueue.connect(config.POSTGRES_DSN);
 
   log.info({ workerId, pollIntervalMs: config.POLL_INTERVAL_MS }, "Consumer started");
+
+  // Metrics endpoint on a separate port so it can be scraped without
+  // sharing a TCP listener with anything else. Prometheus is configured
+  // to hit consumer:9091/metrics in the observability profile.
+  const metricsServer = startMetricsServer(9091, log);
 
   // Heartbeat cadence: a healthy job updates locked_at every HEARTBEAT_MS
   // so the queue's stale-lock timer doesn't reclaim a slow-but-progressing
@@ -41,6 +47,7 @@ async function main() {
     log.info("Consumer shutting down — draining current job");
     running = false;
     if (activeJob) await activeJob.catch(() => undefined);
+    metricsServer.close();
     try { await queue.close(); } catch (err) { log.error({ err }, "Error closing JobQueue"); }
     try { await vectorStore.close(); } catch (err) { log.error({ err }, "Error closing VectorStore"); }
     try { await db.disconnect(); } catch (err) { log.error({ err }, "Error disconnecting MetadataStore"); }
@@ -67,6 +74,9 @@ async function main() {
         });
       }, HEARTBEAT_MS);
 
+      const stopTimer = jobDurationSeconds.startTimer();
+      let outcome: "success" | "retry" | "fail" = "success";
+
       try {
         const result = await handleJob(
           { db, vectorStore, uploadDir: config.UPLOAD_DIR, log },
@@ -78,14 +88,18 @@ async function main() {
         }
         const errMsg = result.errorMessage ?? "unknown error";
         if (result.failureKind === "transient") {
-          const outcome = await queue.retryOrFail(job.id, errMsg);
-          log.info({ jobId: job.id, outcome }, "Transient failure handled");
+          const queueOutcome = await queue.retryOrFail(job.id, errMsg);
+          log.info({ jobId: job.id, outcome: queueOutcome }, "Transient failure handled");
+          outcome = queueOutcome === "retried" ? "retry" : "fail";
         } else {
           // Permanent — terminate immediately, no retries.
           await queue.fail(job.id, errMsg);
+          outcome = "fail";
         }
       } finally {
         clearInterval(heartbeatTimer);
+        stopTimer({ outcome });
+        jobsTotal.labels({ outcome }).inc();
       }
     })();
     await activeJob;

@@ -1,5 +1,6 @@
 import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { authEventsTotal } from "../services/metrics.js";
 
 // argon2id with library defaults (memoryCost=19456 KiB, timeCost=2,
 // parallelism=1) — these are the OWASP-recommended baseline settings as
@@ -169,9 +170,11 @@ export async function authRoutes(fastify: FastifyInstance) {
       // via /auth/login regardless of timing.
       const valid = !!user && !!user.passwordHash && verified;
       if (!valid) {
+        authEventsTotal.labels({ event: "login", outcome: "failure" }).inc();
         return reply.code(401).send({ error: "Invalid credentials" });
       }
 
+      authEventsTotal.labels({ event: "login", outcome: "success" }).inc();
       return reply.send(await issueSession(normalized, reply));
     }
   );
@@ -207,16 +210,19 @@ export async function authRoutes(fastify: FastifyInstance) {
           { userId: outcome.userId },
           "Refresh-token replay detected; revoking all sessions for user"
         );
+        authEventsTotal.labels({ event: "refresh", outcome: "replay" }).inc();
         await fastify.refreshTokens.revokeAllForUser(outcome.userId);
         clearAuthCookies(reply);
         return reply.code(401).send({ error: "Session revoked" });
       }
 
       if (outcome.kind === "missing") {
+        authEventsTotal.labels({ event: "refresh", outcome: "missing" }).inc();
         clearAuthCookies(reply);
         return reply.code(401).send({ error: "Invalid refresh token" });
       }
 
+      authEventsTotal.labels({ event: "refresh", outcome: "success" }).inc();
       return reply.send(await issueSession(outcome.userId, reply));
     }
   );

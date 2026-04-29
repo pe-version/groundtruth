@@ -8,6 +8,7 @@ import {
   getUploadPath,
 } from "@groundtruth/shared";
 import { extractTextFromPDF } from "./pdf-extract.js";
+import { embedDurationSeconds } from "./metrics.js";
 
 const CHUNK_SIZE_TOKENS = 512;
 const CHUNK_OVERLAP_TOKENS = 64;
@@ -67,12 +68,17 @@ export async function processDocument(
   const embeddings = await Promise.all(
     chunks.map((chunk, i) =>
       limit(async () => {
-        const embedding = await withTimeout(
-          embedText(chunk),
-          EMBED_TIMEOUT_MS,
-          `embedText[${i}]`
-        );
-        return { index: i, content: chunk, embedding };
+        const stop = embedDurationSeconds.startTimer();
+        try {
+          const embedding = await withTimeout(
+            embedText(chunk),
+            EMBED_TIMEOUT_MS,
+            `embedText[${i}]`
+          );
+          return { index: i, content: chunk, embedding };
+        } finally {
+          stop();
+        }
       })
     )
   );

@@ -1,0 +1,126 @@
+{
+  "title": "Groundtruth",
+  "uid": "groundtruth-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "tags": ["groundtruth"],
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Queue depth",
+      "description": "Jobs in 'pending' state. The clearest signal of backlog.",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "groundtruth_queue_depth", "refId": "A", "legendFormat": "pending" }
+      ],
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["last"] }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Oldest pending age (s)",
+      "description": "Age of the oldest unclaimed job. Climbing past your SLO is the alert.",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        { "expr": "groundtruth_queue_oldest_pending_age_seconds", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 60 },
+              { "color": "red", "value": 300 }
+            ]
+          }
+        }
+      },
+      "options": { "graphMode": "area", "colorMode": "background", "reduceOptions": { "calcs": ["last"] } }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Failed jobs (terminal)",
+      "description": "Jobs in 'failed' state. The DLQ count.",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "groundtruth_queue_failed_total", "refId": "A" }
+      ],
+      "options": { "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["last"] } }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Jobs handled by outcome (rate/min)",
+      "description": "Success / retry / fail counts; widening retry/fail bands signal upstream trouble.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(groundtruth_jobs_total[1m])) * 60",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Embed latency (p50 / p95)",
+      "description": "Per-chunk embedding latency from transformers.js. Watch p95.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(groundtruth_embed_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(groundtruth_embed_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "API request latency p95 by route",
+      "description": "Top routes by 95th-percentile latency. Cardinality is bounded by route pattern.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(groundtruth_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Auth events (rate/min)",
+      "description": "Login successes, login failures, refresh outcomes. Spikes in 'replay' are noteworthy.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        {
+          "expr": "sum by (event, outcome) (rate(groundtruth_auth_events_total[1m])) * 60",
+          "legendFormat": "{{event}}: {{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    }
+  ]
+}

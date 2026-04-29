@@ -1,0 +1,13 @@
+apiVersion: 1
+
+# Auto-loads any JSON dashboard checked in under
+# /etc/grafana/provisioning/dashboards on container start.
+providers:
+  - name: groundtruth
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards
