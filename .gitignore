@@ -12,6 +12,9 @@ next-env.d.ts
 # Uploads (local dev artifacts)
 /tmp/uploads/
 
+# Demo PDFs downloaded by scripts/seed-fixtures.sh
+test-fixtures/*.pdf
+
 # IDE
 .idea/
 .vscode/
