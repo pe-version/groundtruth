@@ -3,16 +3,16 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import multipart from "@fastify/multipart";
-import jwt from "@fastify/jwt";
 import helmet from "@fastify/helmet";
 import cookie from "@fastify/cookie";
-import { loadApiConfig, MongoDB, VectorStore, createLogger } from "@groundtruth/shared";
+import { loadApiConfig, MongoDB, VectorStore, JobQueue, RefreshTokenStore, createLogger } from "@groundtruth/shared";
 import { documentRoutes } from "./routes/documents.js";
 import { queryRoutes } from "./routes/query.js";
 import { healthRoutes } from "./routes/health.js";
 import { authRoutes } from "./routes/auth.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
-import { KafkaProducer } from "./services/kafka-producer.js";
+import { JwtService } from "./services/jwt.js";
+import { AnthropicProvider } from "./services/anthropic.js";
 import { startJanitor } from "./services/janitor.js";
 
 async function main() {
@@ -47,14 +47,6 @@ async function main() {
     timeWindow: "1 minute",
   });
 
-  await fastify.register(jwt, {
-    secret: config.JWT_SECRET,
-    cookie: {
-      cookieName: "groundtruth_token",
-      signed: false,
-    },
-  });
-
   await fastify.register(multipart, {
     limits: {
       fileSize: 50 * 1024 * 1024, // 50 MB
@@ -65,12 +57,17 @@ async function main() {
 
   const db = await MongoDB.connect(config.MONGO_URI);
   const vectorStore = await VectorStore.connect(config.POSTGRES_DSN);
-  const kafkaProducer = new KafkaProducer(config.KAFKA_BROKERS);
-  await kafkaProducer.connect();
+  const jobQueue = await JobQueue.connect(config.POSTGRES_DSN);
+  const refreshTokens = await RefreshTokenStore.connect(config.POSTGRES_DSN);
+  const jwtService = new JwtService(config.JWT_SECRET);
+  const llm = new AnthropicProvider({ apiKey: config.ANTHROPIC_API_KEY });
 
   fastify.decorate("db", db);
   fastify.decorate("vectorStore", vectorStore);
-  fastify.decorate("kafkaProducer", kafkaProducer);
+  fastify.decorate("jobQueue", jobQueue);
+  fastify.decorate("refreshTokens", refreshTokens);
+  fastify.decorate("jwt", jwtService);
+  fastify.decorate("llm", llm);
   fastify.decorate("config", config);
 
   // --- Auth hook -----------------------------------------------------------
@@ -82,16 +79,28 @@ async function main() {
 
   fastify.addHook("onRequest", async (request, reply) => {
     if (request.routeOptions?.config?.public) return;
+
+    // Accept the token from either the Authorization: Bearer header or the
+    // httpOnly cookie. The cookie path is what the browser uses; the header
+    // path is what curl/CLIs and our smoke tests use.
+    const authHeader = request.headers.authorization;
+    const headerToken =
+      authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
+    const cookieToken = request.cookies?.["groundtruth_token"];
+    const token = headerToken ?? cookieToken;
+    if (!token) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+
     try {
-      await request.jwtVerify();
+      const claims = await jwtService.verifyAccessToken(token);
+      request.user = { sub: claims.sub };
     } catch {
       return reply.code(401).send({ error: "Unauthorized" });
     }
-    if (!request.user?.sub || typeof request.user.sub !== "string") {
-      return reply.code(401).send({ error: "Unauthorized" });
-    }
+
     // Attach userId to the request logger so every subsequent line in this
-    // request (and any Kafka publishes) carries it automatically.
+    // request (and any downstream publishes) carries it automatically.
     request.log = request.log.child({ userId: request.user.sub });
   });
 
@@ -124,7 +133,8 @@ async function main() {
     fastify.log.info("Shutting down...");
     stopJanitor();
     try { await fastify.close(); } catch (err) { fastify.log.error(err, "Error closing Fastify"); }
-    try { await kafkaProducer.disconnect(); } catch (err) { fastify.log.error(err, "Error disconnecting Kafka"); }
+    try { await jobQueue.close(); } catch (err) { fastify.log.error(err, "Error closing JobQueue"); }
+    try { await refreshTokens.close(); } catch (err) { fastify.log.error(err, "Error closing RefreshTokenStore"); }
     try { await vectorStore.close(); } catch (err) { fastify.log.error(err, "Error closing VectorStore"); }
     try { await db.disconnect(); } catch (err) { fastify.log.error(err, "Error disconnecting MongoDB"); }
     process.exit(0);

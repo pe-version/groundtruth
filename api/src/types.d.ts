@@ -1,22 +1,29 @@
-import type { MongoDB, VectorStore, ApiConfig } from "@groundtruth/shared";
-import type { KafkaProducer } from "./services/kafka-producer.js";
+import type {
+  MongoDB,
+  VectorStore,
+  JobQueue,
+  RefreshTokenStore,
+  ApiConfig,
+} from "@groundtruth/shared";
+import type { JwtService } from "./services/jwt.js";
+import type { LlmProvider } from "./services/llm.js";
 
 declare module "fastify" {
   interface FastifyInstance {
     db: MongoDB;
     vectorStore: VectorStore;
-    kafkaProducer: KafkaProducer;
+    jobQueue: JobQueue;
+    refreshTokens: RefreshTokenStore;
+    jwt: JwtService;
+    llm: LlmProvider;
     config: ApiConfig;
   }
 
   interface FastifyContextConfig {
     public?: boolean;
   }
-}
 
-declare module "@fastify/jwt" {
-  interface FastifyJWT {
-    payload: { sub: string };
-    user: { sub: string };
+  interface FastifyRequest {
+    user?: { sub: string };
   }
 }

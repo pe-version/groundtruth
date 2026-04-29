@@ -20,7 +20,7 @@ vi.mock("@groundtruth/shared", async () => {
       Ready: "ready",
       Failed: "failed",
     },
-    embedText: vi.fn().mockResolvedValue(new Array(1536).fill(0.1)),
+    embedText: vi.fn().mockResolvedValue(new Array(384).fill(0.1)),
     getUploadPath: (dir: string, id: string) => `${dir}/${id}.pdf`,
   };
 });
@@ -88,7 +88,7 @@ describe("processDocument", () => {
     expect(firstCall[1]).toBe("doc-1");
     expect(firstCall[2]).toBe(0); // chunkIndex
     expect(typeof firstCall[3]).toBe("string"); // content
-    expect(firstCall[4]).toHaveLength(1536); // embedding
+    expect(firstCall[4]).toHaveLength(384); // embedding
   });
 
   it("produces multiple chunks for long text", async () => {

@@ -7,7 +7,7 @@
     "dev:api": "npm run dev -w api",
     "dev:consumer": "npm run dev -w consumer",
     "dev:frontend": "npm run dev -w frontend",
-    "test": "npm test --workspaces --if-present",
+    "test": "npm test -w @groundtruth/shared -w groundtruth-api -w groundtruth-consumer",
     "lint": "npm run lint --workspaces --if-present"
   }
 }

@@ -4,13 +4,12 @@ import type { FastifyInstance } from "fastify";
 import {
   DocumentStatus,
   type Document,
-  type KafkaDocumentEvent,
   UUID_REGEX,
   getUploadPath,
 } from "@groundtruth/shared";
 
 export async function documentRoutes(fastify: FastifyInstance) {
-  const { db, kafkaProducer, config } = fastify;
+  const { db, jobQueue, config } = fastify;
 
   // Rate limit upload more aggressively
   fastify.post(
@@ -63,18 +62,14 @@ export async function documentRoutes(fastify: FastifyInstance) {
 
       await db.insertDocument(doc);
 
-      const event: KafkaDocumentEvent = {
-        documentId: docId,
-        userId,
-        filename: data.filename,
-      };
-
       try {
-        await kafkaProducer.publishDocumentEvent(event, {
-          requestId: request.id as string,
+        await jobQueue.enqueue({
+          documentId: docId,
+          userId,
+          filename: data.filename,
         });
       } catch (err) {
-        request.log.error({ err, documentId: docId }, "Kafka publish failed");
+        request.log.error({ err, documentId: docId }, "Job enqueue failed");
         await db.markFailed(
           docId,
           "Failed to queue for processing: " + (err as Error).message

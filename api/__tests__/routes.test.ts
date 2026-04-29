@@ -1,12 +1,13 @@
+/// <reference path="../src/types.d.ts" />
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
-import jwt from "@fastify/jwt";
 import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import { authRoutes } from "../src/routes/auth.js";
 import { documentRoutes } from "../src/routes/documents.js";
 import { queryRoutes } from "../src/routes/query.js";
 import { dashboardRoutes } from "../src/routes/dashboard.js";
+import { JwtService } from "../src/services/jwt.js";
 
 // --- Mocks ---
 
@@ -18,18 +19,21 @@ vi.mock("@groundtruth/shared", async () => {
       Ready: "ready",
       Failed: "failed",
     },
-    embedText: vi.fn().mockResolvedValue(new Array(1536).fill(0)),
+    embedText: vi.fn().mockResolvedValue(new Array(384).fill(0)),
     UUID_REGEX: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
     UUID_PATTERN: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
   };
 });
 
-vi.mock("../src/services/anthropic.js", () => ({
-  streamClaude: vi.fn(async function* () {
-    yield "Hello ";
-    yield "world";
-  }),
-}));
+function createMockLlm() {
+  return {
+    name: "test",
+    streamAnswer: vi.fn(async function* () {
+      yield "Hello ";
+      yield "world";
+    }),
+  };
+}
 
 function createMockDb() {
   const users = new Map<string, { _id: string; passwordHash: string; oauthProvider?: string; createdAt: Date }>();
@@ -62,11 +66,37 @@ function createMockVectorStore() {
   };
 }
 
-function createMockKafkaProducer() {
+function createMockJobQueue() {
   return {
-    publishDocumentEvent: vi.fn().mockResolvedValue(undefined),
-    connect: vi.fn().mockResolvedValue(undefined),
-    disconnect: vi.fn().mockResolvedValue(undefined),
+    enqueue: vi.fn().mockResolvedValue("job-id-mock"),
+    fetchOne: vi.fn().mockResolvedValue(null),
+    complete: vi.fn().mockResolvedValue(undefined),
+    fail: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function createMockRefreshTokens() {
+  // In-memory store: hash → { userId, expiresAt, raw }. The mock returns
+  // the raw cleartext on issue() and looks it up on find()/revoke().
+  const tokens = new Map<string, { userId: string; expiresAt: Date }>();
+  let counter = 0;
+  return {
+    issue: vi.fn(async (userId: string) => {
+      const token = `mock-refresh-${++counter}`;
+      tokens.set(token, {
+        userId,
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      });
+      return { token, expiresAt: tokens.get(token)!.expiresAt };
+    }),
+    find: vi.fn(async (token: string) => tokens.get(token) ?? null),
+    revoke: vi.fn(async (token: string) => {
+      tokens.delete(token);
+    }),
+    revokeAllForUser: vi.fn(async () => undefined),
+    pruneExpired: vi.fn(async () => 0),
+    close: vi.fn(async () => undefined),
   };
 }
 
@@ -76,28 +106,43 @@ async function buildApp() {
   const fastify = Fastify({ logger: false });
 
   await fastify.register(cookie);
-  await fastify.register(jwt, { secret: JWT_SECRET });
   await fastify.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
 
   const db = createMockDb();
   const vectorStore = createMockVectorStore();
-  const kafkaProducer = createMockKafkaProducer();
+  const jobQueue = createMockJobQueue();
+  const refreshTokens = createMockRefreshTokens();
+  const llm = createMockLlm();
+  const jwtService = new JwtService(JWT_SECRET);
 
-  fastify.decorate("db", db);
-  fastify.decorate("vectorStore", vectorStore);
-  fastify.decorate("kafkaProducer", kafkaProducer);
-  fastify.decorate("config", { UPLOAD_DIR: "/tmp/test-uploads" });
+  // Mocks are partial — cast to `any` here so the test fixture can stay
+  // narrow without rebuilding the full real interface.
+  fastify.decorate("db", db as any);
+  fastify.decorate("vectorStore", vectorStore as any);
+  fastify.decorate("jobQueue", jobQueue as any);
+  fastify.decorate("refreshTokens", refreshTokens as any);
+  fastify.decorate("jwt", jwtService);
+  fastify.decorate("llm", llm as any);
+  fastify.decorate("config", { UPLOAD_DIR: "/tmp/test-uploads" } as any);
 
   // Auth hook — mirrors prod (api/src/index.ts). Routes opt out via
   // config.public = true on the route definition.
   fastify.addHook("onRequest", async (request, reply) => {
     if (request.routeOptions?.config?.public) return;
-    try {
-      await request.jwtVerify();
-    } catch {
+
+    const authHeader = request.headers.authorization;
+    const headerToken =
+      authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
+    const cookieToken = request.cookies?.["groundtruth_token"];
+    const token = headerToken ?? cookieToken;
+    if (!token) {
       return reply.code(401).send({ error: "Unauthorized" });
     }
-    if (!request.user?.sub || typeof request.user.sub !== "string") {
+
+    try {
+      const claims = await jwtService.verifyAccessToken(token);
+      request.user = { sub: claims.sub };
+    } catch {
       return reply.code(401).send({ error: "Unauthorized" });
     }
   });
@@ -107,11 +152,11 @@ async function buildApp() {
   await fastify.register(queryRoutes, { prefix: "/api" });
   await fastify.register(dashboardRoutes, { prefix: "/api" });
 
-  return { fastify, db, vectorStore, kafkaProducer };
+  return { fastify, db, vectorStore, jobQueue, refreshTokens };
 }
 
-function getToken(fastify: FastifyInstance, sub = "test-user"): string {
-  return fastify.jwt.sign({ sub }, { expiresIn: "1h" });
+async function getToken(fastify: FastifyInstance, sub = "test-user"): Promise<string> {
+  return await fastify.jwt.signAccessToken(sub);
 }
 
 // --- Tests ---
@@ -251,7 +296,7 @@ describe("JWT auth middleware", () => {
   });
 
   it("accepts valid JWT token", async () => {
-    const token = getToken(fastify);
+    const token = await getToken(fastify);
     const res = await fastify.inject({
       method: "GET",
       url: "/api/documents",
@@ -261,7 +306,7 @@ describe("JWT auth middleware", () => {
   });
 
   it("rejects JWT with empty sub", async () => {
-    const token = fastify.jwt.sign({ sub: "" }, { expiresIn: "1h" });
+    const token = await fastify.jwt.signAccessToken("");
     const res = await fastify.inject({
       method: "GET",
       url: "/api/documents",
@@ -271,7 +316,7 @@ describe("JWT auth middleware", () => {
   });
 
   it("accepts request with query string on protected route (no URL-string bypass)", async () => {
-    const token = getToken(fastify);
+    const token = await getToken(fastify);
     const res = await fastify.inject({
       method: "GET",
       url: "/api/documents?foo=bar",
@@ -319,7 +364,7 @@ describe("Document routes", () => {
     const res = await fastify.inject({
       method: "GET",
       url: "/api/documents",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
     });
 
     expect(res.statusCode).toBe(200);
@@ -336,7 +381,7 @@ describe("Document routes", () => {
     const res = await fastify.inject({
       method: "GET",
       url: "/api/documents/not-a-uuid",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toContain("Invalid document ID");
@@ -347,7 +392,7 @@ describe("Document routes", () => {
     const res = await fastify.inject({
       method: "GET",
       url: "/api/documents/550e8400-e29b-41d4-a716-446655440000",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
     });
     expect(res.statusCode).toBe(404);
   });
@@ -366,7 +411,7 @@ describe("Document routes", () => {
     const res = await fastify.inject({
       method: "GET",
       url: "/api/documents/550e8400-e29b-41d4-a716-446655440000",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
     });
     expect(res.statusCode).toBe(404);
   });
@@ -385,7 +430,7 @@ describe("Document routes", () => {
     const res = await fastify.inject({
       method: "GET",
       url: "/api/documents/550e8400-e29b-41d4-a716-446655440000",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().id).toBe("550e8400-e29b-41d4-a716-446655440000");
@@ -402,7 +447,7 @@ describe("Document routes", () => {
     const res = await fastify.inject({
       method: "DELETE",
       url: "/api/documents/550e8400-e29b-41d4-a716-446655440000",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
     });
     expect(res.statusCode).toBe(404);
   });
@@ -419,7 +464,7 @@ describe("Document routes", () => {
     const res = await fastify.inject({
       method: "DELETE",
       url: `/api/documents/${id}`,
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
     });
     expect(res.statusCode).toBe(204);
     expect(vectorStore.deleteChunks).toHaveBeenCalledWith("test-user", id);
@@ -430,7 +475,7 @@ describe("Document routes", () => {
     const res = await fastify.inject({
       method: "DELETE",
       url: "/api/documents/bad-id",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -460,7 +505,7 @@ describe("Query routes", () => {
     const res = await fastify.inject({
       method: "POST",
       url: "/api/query",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
       payload: {
         documentId: "550e8400-e29b-41d4-a716-446655440000",
         question: "What is this about?",
@@ -481,7 +526,7 @@ describe("Query routes", () => {
     const res = await fastify.inject({
       method: "POST",
       url: "/api/query",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
       payload: {
         documentId: "550e8400-e29b-41d4-a716-446655440000",
         question: "test?",
@@ -496,7 +541,7 @@ describe("Query routes", () => {
     const res = await fastify.inject({
       method: "POST",
       url: "/api/query",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
       payload: { question: "Anything?" },
     });
     expect(res.statusCode).toBe(200);
@@ -508,7 +553,7 @@ describe("Query routes", () => {
     const res = await fastify.inject({
       method: "POST",
       url: "/api/query",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
       payload: { question: "" },
     });
     expect(res.statusCode).toBe(400);
@@ -518,7 +563,7 @@ describe("Query routes", () => {
     const res = await fastify.inject({
       method: "POST",
       url: "/api/query",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
       payload: { documentId: "not-a-uuid", question: "test?" },
     });
     expect(res.statusCode).toBe(400);
@@ -528,7 +573,7 @@ describe("Query routes", () => {
     const res = await fastify.inject({
       method: "POST",
       url: "/api/query",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
       payload: { question: "test?", topK: 100 },
     });
     expect(res.statusCode).toBe(400);
@@ -542,7 +587,7 @@ describe("Query routes", () => {
     const res = await fastify.inject({
       method: "POST",
       url: "/api/query",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
       payload: { question: "Multi-doc question?" },
     });
     expect(res.statusCode).toBe(200);
@@ -574,7 +619,7 @@ describe("Dashboard routes", () => {
     const res = await fastify.inject({
       method: "GET",
       url: "/api/dashboard/stats",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -593,7 +638,7 @@ describe("Dashboard routes", () => {
     const res = await fastify.inject({
       method: "GET",
       url: "/api/dashboard/stats",
-      headers: { authorization: `Bearer ${getToken(fastify)}` },
+      headers: { authorization: `Bearer ${await getToken(fastify)}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();

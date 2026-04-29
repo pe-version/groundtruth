@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { signOut } from "next-auth/react";
 import { FileText, UploadCloud, MessageSquare, LayoutDashboard, LogOut } from "lucide-react";
+import { useAuth } from "@/lib/auth-provider";
 
 const links = [
   { href: "/documents", label: "Documents", icon: FileText },
@@ -14,6 +14,12 @@ const links = [
 
 export default function Nav() {
   const pathname = usePathname();
+  const { status, logout } = useAuth();
+
+  // Hide the nav entirely on the auth pages — they're full-page sign-in /
+  // sign-up flows where a header would just be visual noise. Same goes
+  // for any pre-bootstrap render where we don't yet know the auth state.
+  if (status !== "authenticated") return null;
 
   return (
     <nav className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center justify-between shrink-0">
@@ -40,7 +46,7 @@ export default function Nav() {
         </div>
       </div>
       <button
-        onClick={() => signOut({ callbackUrl: "/" })}
+        onClick={() => logout()}
         className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-gray-800/50 transition-colors"
       >
         <LogOut className="w-4 h-4" />

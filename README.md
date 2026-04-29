@@ -1,75 +1,51 @@
 # Groundtruth — Document Q&A with RAG
 
-A production-architecture document Q&A platform. Upload PDFs, ask questions, get answers grounded in the source text.
+A document Q&A platform. Upload PDFs, ask questions, get answers grounded in the source text.
 
 *Built via Claude-augmented development.*
 
-## Architecture
+## Design philosophy
+
+The simplest stack that demonstrates the architecture. Every external dependency, broker, and library is something a senior reviewer can ask "why?" about — and every answer should be substantive. This README leads with the decisions, not the features.
 
 ```
 ┌─────────────────┐
 │  Next.js (3000) │  — Upload, document library, chat UI
 └────────┬────────┘
-         │ REST + JWT
+         │ REST + JWT (15-min access) + httpOnly refresh cookie
 ┌────────▼────────┐
 │  Fastify (8080) │  — Auth, rate limiting, file handling, RAG query
-└──┬──────────┬───┘
-   │ Kafka    │ pgvector
-   │ publish  │ similarity search
-   ▼          ▼
+└──┬───────┬──┬───┘
+   │       │  └─ pgvector similarity search (read path)
+   │       │
+   │       └─── Postgres job queue (enqueue on upload)
+   │
+   ▼
+┌─────────────────────┐
+│  TS Consumer        │  — claims jobs via SELECT FOR UPDATE SKIP LOCKED
+└──┬─────────────┬────┘    extract → chunk → embed (local) → index
+   │             │
+   ▼             ▼
 ┌──────────┐  ┌─────────────────────┐
-│  Kafka   │  │  Postgres + pgvector│  — vector embeddings
-│ raw-docs │  └─────────────────────┘
-└────┬─────┘
-     │ consume
-┌────▼──────────────────┐
-│  TS Consumer          │  — extract PDF → chunk → embed → index
-└──┬────────────────┬───┘
-   │ status update  │ upsert vectors
-   ▼                ▼
-┌──────────┐  ┌─────────────────────┐
-│  MongoDB │  │  Postgres + pgvector│
-│ metadata │  │  embeddings         │
+│  MongoDB │  │  Postgres + pgvector│  — chunks + queue (one cluster)
+│ metadata │  │  embeddings (384d)  │
 └──────────┘  └─────────────────────┘
 ```
 
-**Key architectural decisions:**
-- Full TypeScript monorepo with shared types and clients
-- JWT authentication with bcrypt password hashing and httpOnly cookies
-- Users stored in MongoDB (`users` collection) — persistent across restarts, no in-memory state
-- GitHub OAuth via NextAuth.js — users auto-provisioned on first login; no password required
-- Security headers via `@fastify/helmet`
-- User isolation — documents and queries are scoped per user with ownership checks
-- Rate limiting (100 req/min general, 20 req/min for LLM queries, 10 req/min for uploads, 5 req/min for registration)
-- Input validation via Fastify JSON Schema (UUID format, body size limits)
-- Upload returns immediately (202 Accepted) — all processing is async through Kafka
-- Consumer uses p-limit for concurrent embedding calls with backpressure
-- File path validation in consumer to prevent path traversal
-- Real PDF text extraction via pdf-parse
-- pgvector for vector storage — no external vector DB required
-- MongoDB stores document metadata + status; aggregation pipelines power the dashboard
-- Consumer commits Kafka offsets only after successful processing (at-least-once semantics)
-- Streaming SSE responses with error handling for real-time LLM output in the chat UI
-- Multi-document queries — search across all documents when no specific document is selected
-- Token-aware chunking via js-tiktoken (cl100k_base, matching the embedding model)
-- Dead letter queue (`raw-docs-dlq`) — failed documents are DLQ'd on first failure for operator inspection; users recover by re-uploading
-- Route protection via Next.js middleware — unauthenticated users redirected to `/login`
-- Dashboard page with aggregation pipeline stats and visual status bar
-- Anthropic Claude for LLM answers, OpenAI for embeddings
-
 ## Stack
 
-| Layer | Tech |
-|---|---|
-| Frontend | Next.js 14, TypeScript, Tailwind |
-| API | Node.js, Fastify, TypeScript |
-| Consumer | Node.js, KafkaJS, TypeScript |
-| LLM | Anthropic Claude (claude-sonnet-4-6) |
-| Embeddings | OpenAI text-embedding-3-small |
-| Message broker | Apache Kafka (KRaft mode, single-node) |
-| Vector store | Postgres + pgvector extension |
-| Document metadata | MongoDB |
-| Auth | JWT (HS256) + NextAuth.js + optional GitHub OAuth |
+| Layer | Tech | Why this and not the obvious-bigger choice |
+|---|---|---|
+| Frontend | Next.js 14, TypeScript, Tailwind | — |
+| API | Node.js, Fastify, TypeScript | Lightest fast HTTP framework with Schema validation built in |
+| Consumer | Node.js, TypeScript | Same toolchain as the API, no extra runtime |
+| LLM | Anthropic Claude (`claude-sonnet-4-6`) via an `LlmProvider` interface | Provider is one swap point; replacement is a new class, not a refactor |
+| Embeddings | `@xenova/transformers` + `bge-small-en-v1.5` (384 dims, local) | No paid API key, no per-token cost, no third-party CVE feed on the hot path |
+| PDF extraction | `unpdf` (pdf.js wrapper) | Maintained, ESM, no native deps; replaces `pdf-parse` |
+| Message broker | None — Postgres `SELECT FOR UPDATE SKIP LOCKED` | One fewer container; Postgres is already in the stack |
+| Vector store | Postgres + pgvector | Already running for the queue; no extra DB |
+| Document metadata | MongoDB | Document-shaped data, aggregation pipelines power the dashboard |
+| Auth | argon2id passwords + 15-min access JWT (jose) + 30-day rotating refresh tokens (Postgres) | No NextAuth, no `jsonwebtoken`, no denylist; revocation is a row delete |
 
 ## Quick Start
 
@@ -77,7 +53,6 @@ A production-architecture document Q&A platform. Upload PDFs, ask questions, get
 - Docker + Docker Compose
 - Node.js 20+
 - Anthropic API key
-- OpenAI API key (for embeddings)
 
 ### 1. Clone and configure
 
@@ -85,14 +60,14 @@ A production-architecture document Q&A platform. Upload PDFs, ask questions, get
 git clone https://github.com/pe-version/groundtruth
 cd groundtruth
 cp .env.example .env
-# Edit .env and set ANTHROPIC_API_KEY, OPENAI_API_KEY, and JWT_SECRET
+# Edit .env: set ANTHROPIC_API_KEY and JWT_SECRET ($(openssl rand -base64 32)).
 ```
 
 ### 2. Start infrastructure
 
 ```bash
-docker-compose up -d kafka mongo postgres
-# Kafka has a healthcheck; dependents wait on it automatically.
+docker compose up -d mongo postgres
+# Postgres has a healthcheck; dependents wait on it automatically.
 ```
 
 ### 3. Install dependencies
@@ -102,30 +77,22 @@ npm install
 npm run build -w @groundtruth/shared
 ```
 
-### 4. Run the API
+### 4. Run the services
 
 ```bash
-npm run dev:api
-```
-
-### 5. Run the consumer
-
-```bash
-npm run dev:consumer
-```
-
-### 6. Run the frontend
-
-```bash
-npm run dev:frontend
+npm run dev:api        # terminal 1
+npm run dev:consumer   # terminal 2
+npm run dev:frontend   # terminal 3
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
 
-### Run everything with Docker Compose
+The first time the consumer processes a document it will download the embedding model (~33 MB, cached afterwards under `~/.cache/transformers.js/`).
+
+### Run everything in Docker
 
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
 
 ## Project Structure
@@ -134,213 +101,246 @@ docker-compose up --build
 groundtruth/
 ├── packages/shared/                  # Shared TypeScript package
 │   └── src/
-│       ├── types.ts                  # Document, User, Chunk, event interfaces
-│       ├── config.ts                 # Zod-validated environment config
+│       ├── types.ts                  # Document, User, Chunk types
+│       ├── config.ts                 # Zod-validated env config
 │       ├── logger.ts                 # Shared pino structured logger factory
 │       ├── mongo.ts                  # MongoDB client (documents + users)
 │       ├── vector-store.ts           # pgvector client (insert, search, delete)
-│       ├── embedding.ts              # OpenAI embedding client (DRY)
-│       ├── storage.ts                # Single source of truth for upload path layout
-│       ├── validation.ts             # Shared UUID_REGEX (DRY across routes)
+│       ├── embedding.ts              # Local transformers.js embeddings
+│       ├── job-queue.ts              # Postgres SKIP LOCKED queue (replaces Kafka)
+│       ├── refresh-tokens.ts         # Hashed refresh-token store
+│       ├── storage.ts                # Single source of truth for upload paths
+│       ├── validation.ts             # Shared UUID_REGEX
 │       └── index.ts                  # Barrel export
 │
 ├── api/                              # Fastify HTTP API
 │   └── src/
 │       ├── index.ts                  # Server entrypoint, plugin registration
-│       ├── types.d.ts                # Fastify type augmentation (typed decorators)
+│       ├── types.d.ts                # Fastify type augmentation
 │       ├── routes/
-│       │   ├── auth.ts               # Register + login (bcrypt, MongoDB-backed)
+│       │   ├── auth.ts               # Register / login / refresh / logout
 │       │   ├── documents.ts          # Upload, list, get, delete (ownership checks)
-│       │   ├── query.ts              # RAG query (embed → search → Claude, SSE)
-│       │   ├── dashboard.ts          # Per-user stats (aggregation pipeline)
+│       │   ├── query.ts              # RAG query (embed → search → LLM, SSE)
+│       │   ├── dashboard.ts          # Per-user stats
 │       │   └── health.ts             # Health check
 │       └── services/
-│           ├── anthropic.ts          # Claude chat completion
-│           ├── janitor.ts            # Periodic cleanup of orphaned uploads + vectors
-│           └── kafka-producer.ts     # KafkaJS producer
+│           ├── llm.ts                # LlmProvider interface
+│           ├── anthropic.ts          # AnthropicProvider (default impl)
+│           ├── jwt.ts                # jose-backed JwtService
+│           └── janitor.ts            # Periodic cleanup of orphaned uploads + vectors
 │
-├── consumer/                         # Kafka consumer
+├── consumer/                         # Job-queue worker
 │   └── src/
-│       ├── index.ts                  # Consumer entrypoint + heartbeat + graceful shutdown
-│       ├── handle-message.ts         # Per-message handler (validates, dispatches, DLQs)
+│       ├── index.ts                  # Poll loop + graceful shutdown
+│       ├── handle-job.ts             # Per-job handler (success → complete; fail → mark)
 │       ├── processor.ts              # Pipeline: extract → chunk → embed → index
-│       ├── dlq.ts                    # Dead-letter queue producer (raw-docs-dlq)
-│       └── pdf-extract.ts            # PDF text extraction (pdf-parse)
+│       └── pdf-extract.ts            # PDF text extraction (unpdf)
 │
 ├── frontend/                         # Next.js app
-│   ├── middleware.ts                 # Route protection — redirects unauthenticated users
 │   ├── app/
-│   │   ├── login/page.tsx            # Sign-in form (credentials or GitHub OAuth)
+│   │   ├── login/page.tsx            # Sign-in form
 │   │   ├── register/page.tsx         # Account creation form
 │   │   ├── upload/page.tsx           # Drag-and-drop upload
 │   │   ├── documents/page.tsx        # Document library with status polling
-│   │   ├── chat/page.tsx             # Chat interface with markdown + source excerpts
-│   │   └── api/auth/[...nextauth]/   # NextAuth handler (credentials + GitHub)
-│   ├── components/nav.tsx            # Shared nav bar with sign-out
+│   │   ├── chat/page.tsx             # Chat with markdown + source excerpts
+│   │   └── dashboard/page.tsx        # Per-user stats
+│   ├── components/nav.tsx            # Shared nav bar
 │   └── lib/
-│       ├── api.ts                    # Typed API client (httpOnly cookie + Bearer token)
-│       └── auth-provider.tsx         # SessionProvider + token sync to API client
+│       ├── api.ts                    # Typed API client + silent refresh on 401
+│       └── auth-provider.tsx         # Auth context (no NextAuth)
 │
-├── infra/
-│   └── init.sql                      # pgvector schema + unique chunk constraint
-│
+├── infra/init.sql                    # pgvector + jobs + refresh_tokens schema
 ├── docker-compose.yml
 ├── .env.example
 ├── tsconfig.base.json
 └── package.json                      # Workspace root
 ```
 
+## Decision records
+
+These are the choices a reviewer or interviewer is most likely to probe. Each one is here as evidence that an obvious-bigger option was considered and rejected on substance.
+
+### ADR: No Kafka — Postgres job queue
+
+**Decision:** Document-processing jobs are stored as rows in `document_jobs` and claimed via `SELECT … FOR UPDATE SKIP LOCKED`. No Kafka, no ZooKeeper, no Redpanda.
+
+**Why not Kafka.** This system has one producer (the API) and one consumer group (the worker). Kafka's strengths — partitioned logs, replay, multi-consumer fan-out, durability under broker failures — solve problems we don't have. Running a broker for one queue with one reader is the textbook over-engineering signal a senior reviewer flags first.
+
+**Why not Redpanda.** Same problem as Kafka here: the abstraction is heavier than the workload deserves. Redpanda is a great Kafka replacement when you've already decided you need Kafka semantics.
+
+**What Postgres gives us.** Postgres is already in the stack for pgvector. The queue is a single table:
+
+```sql
+CREATE TABLE document_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    document_id TEXT, user_id TEXT, filename TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | processing | completed | failed
+    attempts INT NOT NULL DEFAULT 0,
+    locked_at TIMESTAMPTZ, locked_by TEXT,
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+The consumer's claim is one statement:
+
+```sql
+UPDATE document_jobs
+SET status='processing', locked_at=NOW(), locked_by=$1, attempts=attempts+1
+WHERE id = (
+  SELECT id FROM document_jobs
+  WHERE status='pending'
+     OR (status='processing' AND locked_at < NOW() - $2 * INTERVAL '1 ms')
+  ORDER BY created_at LIMIT 1
+  FOR UPDATE SKIP LOCKED
+)
+RETURNING ...;
+```
+
+`SKIP LOCKED` lets N workers run in parallel without coordination. A worker that crashes mid-job leaves a `processing` row with a stale `locked_at`, which any other worker reclaims after the staleness threshold (default 5 minutes).
+
+**Failed jobs ARE the DLQ.** A failed row stays in the table with `status='failed'` and `error_message` populated. Inspection is `SELECT * FROM document_jobs WHERE status='failed'` — operators don't need a separate Kafka topic to peek at the post-mortem.
+
+**When this would not be the right call.** Multiple independent consumer groups, replay-as-feature, multi-thousand events/sec sustained, or a hard requirement to keep the broker outside the database. None of those apply here.
+
+### ADR: Local embeddings — no OpenAI
+
+**Decision:** Embed text in-process with `@xenova/transformers` running `Xenova/bge-small-en-v1.5` (384 dims). No OpenAI dependency, no API key, no per-token cost, no network on the hot path.
+
+**Why.** OpenAI's `text-embedding-3-small` is a fine model, but it's also the path-of-least-resistance choice. For this workload it added: a paid API key, an SDK with its own CVE feed, network latency on every chunk, and a vendor lock-in for an undifferentiated capability. `bge-small-en-v1.5` is ~33 MB quantized, runs CPU-only, and is competitive on the BEIR retrieval benchmark with much larger commercial models.
+
+**Cost.** First-time download of ~33 MB to `~/.cache/transformers.js/`, ~250 MB resident memory while the consumer runs, ~30–80 ms per chunk on a modern laptop CPU. No GPU required.
+
+**Schema coupling.** The pgvector column is declared `vector(384)`; `EMBED_DIM` in `packages/shared/src/embedding.ts` must match. Changing the model means re-embedding every document, so the model name and dim are pinned alongside the schema.
+
+**LLM is still hosted.** Generation quality matters more than embedding quality for grounded Q&A — Claude's prose is hard to match locally without a 7B+ model and a GPU. The `LlmProvider` interface keeps the swap point clean if that calculation changes.
+
+### ADR: No denylist — short access tokens + rotating refresh tokens
+
+**Decision:** Access tokens are 15-minute JWTs (jose, HS256). Refresh tokens are 30-day random secrets, hashed with SHA-256 and stored in Postgres. Revocation = `DELETE` on the row. No per-request lookup, no Redis, no MongoDB-backed denylist.
+
+**Why not a denylist.** A denylist defeats the only thing a stateless JWT is good for (zero per-request DB lookup). The design proposed earlier in this README — "store revoked tokens in MongoDB or Redis" — was wrong on two counts: MongoDB is the wrong store for that workload (Redis would be marginally less wrong) AND the right answer was not a denylist at all.
+
+**What this design gives us.**
+- Stateless access path: every authenticated request verifies the JWT signature locally; no auth lookup.
+- Revocation horizon ≤ 15 minutes (the access TTL), with no per-request cost.
+- Refresh-token rotation: every `/auth/refresh` deletes the presented token before issuing a new one. A replayed refresh token (e.g., stolen) hits a 401 the second time it's used; the legitimate session continues.
+- Stored hashes, not cleartext: a leaked DB dump cannot be used to mint new access tokens.
+
+**OAuth deferred.** The previous build had GitHub OAuth via NextAuth + a server-to-server `/auth/oauth-token` endpoint with a shared secret. That was removed for this iteration to keep the auth surface tight. Re-adding OAuth would mean a small handwritten OAuth client (no NextAuth) and a separate provisioning path that issues the same access+refresh pair. See Production Readiness.
+
+### ADR: LLM provider abstraction
+
+**Decision:** The query route calls `fastify.llm.streamAnswer({systemPrompt, userPrompt})`. The implementation is `AnthropicProvider`. The interface is deliberately narrow — text streaming only, no function calling or vision — because every additional capability widens what we'd have to keep consistent across providers.
+
+**Why bother.** Dropping the OpenAI embeddings dependency removed one vendor; keeping all of Claude's surface accessible only through one concrete class would defeat the lesson. The abstraction is one file (`api/src/services/llm.ts`) and exists so a future swap to Ollama, llama.cpp, or a different hosted vendor is a new class implementation, not a route refactor.
+
 ## Authentication
 
-Auth uses a unified approach: the API issues JWTs (HS256) backed by MongoDB user storage, and the frontend session carries that same token. All API calls use it via `Authorization: Bearer` header plus an httpOnly cookie fallback.
+Auth is plain credentials + JWTs against Fastify-issued tokens.
 
-**Credentials flow:**
-1. User registers at `/register` → API hashes password (bcrypt, 12 rounds) and stores in MongoDB `users` collection
-2. Login → API validates against hash, issues 1h JWT
-3. NextAuth stores the token in its session; `AuthProvider` syncs it to the API client on every session change
-4. Next.js `middleware.ts` redirects unauthenticated users to `/login` before any page renders
-
-**GitHub OAuth flow (optional):**
-1. Set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `OAUTH_SERVER_SECRET` in `.env`
-2. After GitHub confirms the OAuth login, NextAuth's server-side JWT callback calls `POST /api/auth/oauth-token` — a server-to-server endpoint that never passes through the browser
-3. The API verifies `OAUTH_SERVER_SECRET` (timing-safe comparison), upserts the user in MongoDB with an empty `passwordHash`, and returns a standard JWT
-4. NextAuth stores that JWT in the session; all subsequent requests are indistinguishable from a credentials login
+**Flow:**
+1. `POST /api/auth/register` or `POST /api/auth/login` — returns `{ token, userId }` and sets two cookies:
+   - `groundtruth_token` (httpOnly, 15-min) — the access JWT
+   - `groundtruth_refresh` (httpOnly, 30-day, path scoped to `/api/auth`) — the refresh secret
+2. The frontend mirrors the access token into module-local state so it can also send `Authorization: Bearer …` (cookies are the browser-only path; the header path is what curl and the smoke test use).
+3. On any 401, the API client calls `POST /api/auth/refresh` once and retries. If the refresh fails, the user is bounced to `/login`.
+4. `POST /api/auth/logout` revokes the presented refresh token and clears both cookies.
 
 **Endpoints:**
-- `POST /api/auth/register` — create account (min 8-char password, bcrypt, 5 req/min)
-- `POST /api/auth/login` — validate credentials, receive JWT (10 req/min)
-- `POST /api/auth/oauth-token` — server-to-server only; requires `OAUTH_SERVER_SECRET` (30 req/min)
-- All other `/api/*` routes (except `/health`) require a valid JWT
+- `POST /api/auth/register` — create account (8+ char password, argon2id, 5 req/min)
+- `POST /api/auth/login` — validate credentials, receive access + refresh (10 req/min)
+- `POST /api/auth/refresh` — rotate refresh, mint new access (30 req/min)
+- `POST /api/auth/logout` — revoke refresh, clear cookies (30 req/min)
+- All other `/api/*` routes (except `/health`) require a valid access JWT
 - Documents, queries, and dashboard stats are scoped per user
 
-### ADR: OAuth provisioning via dedicated server-to-server endpoint
+## Job queue
 
-**Decision:** OAuth users are provisioned and issued JWTs through a dedicated `/api/auth/oauth-token` endpoint authenticated by a shared `OAUTH_SERVER_SECRET`, rather than storing a per-user or shared password.
+| Status | Meaning |
+|---|---|
+| `pending` | waiting for a worker |
+| `processing` | claimed by `locked_by`; `locked_at` says when |
+| `completed` | success; kept briefly as audit trail |
+| `failed` | `error_message` populated; equivalent to a DLQ entry |
 
-**Context:** After a GitHub OAuth login, NextAuth holds a verified OAuth identity but the Fastify API only understands JWTs it issued itself. We need to bridge them. Three approaches were considered:
+Inspect failures: `SELECT id, document_id, error_message FROM document_jobs WHERE status='failed' ORDER BY updated_at DESC;`
 
-| Approach | How it works | Why rejected |
-|---|---|---|
-| Shared `OAUTH_PROVISION_SECRET` as password | All OAuth users share one password. NextAuth calls `/auth/register` then `/auth/login` using this secret. | The secret is deterministic per user or global. If leaked, any attacker knowing a valid OAuth `userId` (predictable: `github:<numericId>`) can call `/auth/login` directly and receive a valid JWT — no OAuth required. |
-| Per-user random password stored in MongoDB | Generate a random password at provision time, store alongside the hash, retrieve it for subsequent logins. | Requires a privileged "get password" API call, creating a new attack surface. Any endpoint that returns a value usable to authenticate has the same exposure as the secret itself. Also mixes credential and OAuth identity models unnecessarily. |
-| **Dedicated `oauth-token` endpoint with server secret** | NextAuth server presents `OAUTH_SERVER_SECRET` to receive a JWT. OAuth users have no `passwordHash`; `/auth/login` cannot issue them a token. | **Chosen.** The secret never touches the browser. OAuth users cannot be impersonated via `/auth/login` even if their `userId` is known — the only authentication path requires the server secret. |
-
-**Security properties of the chosen design:**
-- `OAUTH_SERVER_SECRET` is a server-side environment variable on both the API and the Next.js server. It is never sent to or readable by the browser.
-- OAuth-provisioned users have `passwordHash: ""`. `bcrypt.compare(anything, "")` returns false, so `/auth/login` is categorically closed to them.
-- The endpoint uses `timingSafeEqual` for secret comparison, preventing timing-based enumeration.
-- The endpoint is rate-limited to 30 req/min — well above legitimate traffic (one call per OAuth login) but low enough to make brute-force impractical.
-- If `OAUTH_SERVER_SECRET` is not configured, the endpoint returns 503. OAuth login is unavailable rather than falling back to an insecure path.
-
-### ADR: Kafka broker — KRaft mode, no ZooKeeper, not Redpanda
-
-**Decision:** Run a single-node Apache Kafka broker in **KRaft mode** (combined controller+broker role). ZooKeeper is not used. Redpanda was evaluated and the project stayed on Apache Kafka.
-
-**Context:** The project needs a durable async message broker to decouple upload-time HTTP requests from PDF processing. The original compose shipped the canonical Confluent pattern: ZooKeeper + Kafka. ZK is now legacy — KRaft is the default metadata quorum for Apache Kafka since 3.5, and ZooKeeper support was removed entirely in Kafka 4.0 (2025). Three options were considered:
-
-| Option | How it works | Why rejected / chosen |
-|---|---|---|
-| ZooKeeper + Kafka (original) | Separate ZK ensemble stores Kafka metadata. Kafka coordinates through ZK. | **Rejected.** ZK is removed in Kafka 4.x; shipping a new project on it in 2026 is backfilling toward deprecated infra. Two containers where one now suffices, with no offsetting benefit for a dev/demo topology. |
-| Redpanda | Kafka-wire-compatible single binary in Go/C++. No JVM, no ZK, no KRaft config. | **Considered.** Excellent engineering — thread-per-core runtime, lower memory footprint, faster cold-start, and a genuinely elegant operational story. For this project the deciding factor was ecosystem alignment: Apache Kafka has the broader operator ecosystem (Strimzi, MSK, Confluent Platform), the longer public incident-postmortem record, and unambiguous OSI-approved licensing. Those factors matter more here than the footprint savings. Redpanda would be a reasonable choice for a project where operational simplicity is the primary constraint. |
-| **Apache Kafka in KRaft mode** | Single broker serves both `broker` and `controller` roles; a Raft-based metadata quorum replaces ZK. | **Chosen.** Current default Kafka architecture, one container, no legacy infra, same client libraries and operational surface as Kafka at scale. |
-
-**Implementation notes (see `docker-compose.yml`):**
-- `KAFKA_PROCESS_ROLES=broker,controller` — combined mode is supported for dev/test; production deployments should separate the roles across nodes to isolate metadata availability from broker availability.
-- Three listeners: `PLAINTEXT` (intra-cluster / container-to-container), `CONTROLLER` (KRaft quorum), `PLAINTEXT_HOST` (external clients on the host). Each has a distinct port so listener role is unambiguous.
-- `CLUSTER_ID` is a stable base64url UUID pinned in the compose file. The `cp-kafka` entrypoint formats the KRaft log dir on first boot when this env var is set, avoiding a manual `kafka-storage format` step.
-- Internal topics (`__consumer_offsets`, transaction state log) are forced to replication factor 1 via `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR` / `KAFKA_TRANSACTION_STATE_LOG_*`. The defaults are 3, which would fail to create on a single-broker cluster. Production multi-broker deployments must raise these back to 3 with `min.insync.replicas=2`.
-- A `healthcheck` using `kafka-broker-api-versions` gates the `api` and `consumer` service startup via `depends_on: { condition: service_healthy }`, so dependents only start once the broker is accepting client API calls.
-- Log data is persisted to a named `kafka_data` volume so topic contents and KRaft metadata survive container restarts.
-- PLAINTEXT is used throughout because all traffic is inside the Docker bridge network on the developer's laptop. Production must switch to SASL+TLS listeners (`SASL_SSL`) with per-client credentials and a proper cert chain.
-
-## Kafka Topics
-
-| Topic | Producer | Consumer | Purpose |
-|---|---|---|---|
-| `raw-docs` | API on upload | Consumer (processor) | Trigger document processing |
-| `raw-docs-dlq` | Consumer (on failure) | — | Dead-letter queue for failed documents |
-
-Topics are auto-created by Kafka on first use (see `KAFKA_AUTO_CREATE_TOPICS_ENABLE`).
-
-## Scaling
-
-To run multiple consumer instances for parallel processing:
+Run multiple workers for parallel processing — each one calls `SKIP LOCKED` so they never block each other:
 ```bash
-docker-compose up --scale consumer=3
+docker compose up --scale consumer=3
 ```
-Kafka's consumer group (set via `KAFKA_GROUP_ID`) distributes partitions across instances automatically.
 
 ## Testing
 
 ```bash
-npm test                    # Run all workspace tests
-npm test -w groundtruth-api      # API tests only
-npm test -w groundtruth-consumer # Consumer tests only
+npm test                              # runs shared + api + consumer (frontend has no test suite)
+npm test -w groundtruth-api           # API tests only
+npm test -w groundtruth-consumer      # Consumer tests only
+```
+
+A scripted smoke test that exercises the full HTTP path lives at `scripts/smoke-test.sh`:
+```bash
+scripts/smoke-test.sh path/to/some.pdf
 ```
 
 ## Production Readiness
 
-The architecture is intentionally production-shaped, but several gaps remain before actual production deployment. Listed by category:
+The architecture is intentionally small, but several gaps remain before production. Listed by category.
 
 ### Auth & Identity
-- **Token refresh** — Tokens expire after 1h with no refresh mechanism. Users are silently logged out mid-session. Implement refresh tokens (stored in MongoDB with a `revoked` flag) or use short-lived access tokens with longer-lived refresh tokens.
-- **OAuth provisioning secret** — Implemented via a dedicated server-to-server `oauth-token` endpoint. OAuth users have no stored password; `/auth/login` cannot issue them a token. See ADR in README § Authentication.
-- **Password reset** — No recovery path if a user forgets their password. Requires email infrastructure (SMTP or transactional email service like Resend or SendGrid).
-- **Email verification** — Accounts are created without verifying the username is a real identity. Add email-as-username with a verification flow to prevent account squatting.
-- **Session revocation** — JWTs are stateless; a signed-out token remains valid until expiry. For true revocation, maintain a token denylist in Redis or MongoDB with TTL matching token expiry.
+- **OAuth (e.g., GitHub).** Removed in this iteration. A small hand-rolled OAuth client (no NextAuth) plus a `provider:id` user row + the same refresh-token issuance path is the next step.
+- **Password reset.** No recovery path. Requires email infrastructure (SMTP or transactional service).
+- **Email verification.** Accounts are created without verifying the username is a real identity.
+- **"Sign out everywhere".** `RefreshTokenStore.revokeAllForUser` is implemented but not exposed via an endpoint.
 
 ### Data & Storage
-- **MongoDB indexes** — The `users` and `documents` collections have no indexes beyond `_id`. Add `{ userId: 1 }` index on `documents` for list/filter performance, and ensure `users._id` uniqueness is enforced at the DB level (it is, since `_id` is the username, but a compound unique index on `username` field would be more conventional).
-- **File storage** — Uploaded PDFs are written to the local filesystem (`/tmp/uploads`). In production, use object storage (S3, GCS, R2) so the API and consumer can run on separate machines without a shared volume.
-- **Vector tombstoning** — Deleted documents remove MongoDB metadata but chunks in pgvector are deleted via a separate call. If that call fails, stale vectors accumulate. Add a cleanup job or use a transaction-like two-phase delete.
-- **Conversation persistence** — Chat history exists only in React state. Add a `conversations` collection in MongoDB to persist chat sessions per user, enabling multi-turn context and session resumption.
+- **MongoDB indexes.** Add `{ userId: 1 }` on `documents` for list/filter performance.
+- **File storage.** Uploaded PDFs are written to a local volume. Production = S3/GCS so the API and consumer can run on separate hosts.
+- **Vector tombstoning.** Deleted documents remove MongoDB metadata first, pgvector chunks second; a failure between them leaves stale vectors. Move to a two-phase delete or a janitor sweep.
+- **Postgres split.** One Postgres carries both pgvector and the queue. If vector-query load grows enough to compete with queue locking, split them onto separate clusters with appropriate sizing.
+- **Refresh-token janitor.** `pruneExpired()` exists but isn't invoked yet; wire it into the existing janitor loop.
+- **Job audit retention.** Completed and failed rows accumulate; reap with a janitor sweep (e.g., delete completed > 7 days, failed > 30 days).
 
 ### Observability
-- **Structured logging** — Fastify's built-in logger emits JSON but there's no log aggregation. Pipe to a log shipper (Fluent Bit, Vector) feeding into Loki, Datadog, or CloudWatch.
-- **Metrics** — No application-level metrics. Instrument with Prometheus (via `fastify-metrics`) and export consumer lag, embedding latency, LLM latency, and error rates.
-- **Distributed tracing** — Requests span the API, Kafka, and consumer with no trace correlation. Add OpenTelemetry with a W3C `traceparent` header propagated through Kafka message headers.
-- **Alerting** — Set alerts on DLQ depth (documents stuck in dead-letter queue), consumer lag, and LLM error rate.
+- **Log aggregation.** Pino emits JSON; production needs a shipper (Vector / Fluent Bit) into Loki / Datadog / CloudWatch.
+- **Metrics.** No application metrics. `fastify-metrics` would expose Prometheus counters for queue depth, embedding latency, LLM latency, error rates.
+- **Distributed tracing.** No `traceparent` propagation today. OpenTelemetry across HTTP → queue → consumer would be the right shape.
+- **Alerting.** Set thresholds on `failed` job count, oldest pending job age, and LLM error rate.
 
 ### Reliability
-- **Idempotent upload** — Re-uploading the same file creates a duplicate document. Add a content hash on upload and deduplicate by hash + userId.
-- **Consumer exactly-once** — The consumer uses at-least-once Kafka semantics. Duplicate processing is prevented by the pgvector unique constraint on `(document_id, chunk_index)`, but the MongoDB status update could still double-fire. Evaluate whether this matters for your workload.
-- **API timeouts** — LLM calls and embedding calls have no explicit timeouts. A slow Anthropic or OpenAI response will hold the connection open indefinitely. Set `AbortController` timeouts on all external calls.
-- **Health check depth** — The `/health` endpoint returns 200 without checking MongoDB, Postgres, or Kafka connectivity. A deep health check enables load balancers to remove unhealthy instances automatically.
+- **Idempotent upload.** Re-uploading the same PDF creates a duplicate document. Add a content hash and dedupe by `(hash, userId)`.
+- **API timeouts.** Anthropic calls have a 60s timeout; embedding calls do not. Add `AbortController` timeouts to the embedding pipeline so a stuck inference doesn't pin a worker.
+- **Health check depth.** `/health` returns 200 unconditionally. A deep check would probe Postgres + Mongo connectivity so a load balancer can drop unhealthy instances.
 
 ### Security
-- **CORS in production** — `CORS_ORIGINS` is a comma-separated env var. Validate it at startup (currently done) but also ensure it's set to the exact production domain, not a wildcard.
-- **File type validation** — The API validates MIME type and extension on upload, but pdf-parse can panic on malformed PDFs. Run the consumer in a sandboxed environment (separate container, restricted syscalls via seccomp) to limit blast radius.
-- **Dependency audit** — Run `npm audit` before each deployment and pin transitive dependencies with a lockfile. Consider Dependabot or Renovate for automated updates.
-- **Secrets management** — `.env` files work for development. In production, use a secrets manager (AWS Secrets Manager, HashiCorp Vault, or Doppler) and inject secrets at runtime rather than baking them into container images.
+- **CORS in production.** `CORS_ORIGINS` defaults to `http://localhost:3000`; production must set it to the exact production domain.
+- **PDF blast radius.** unpdf wraps pdf.js, which is more robust than pdf-parse, but a malicious PDF can still consume CPU. Run the consumer with restricted resources (cgroups / k8s limits / seccomp).
+- **Dependency audit.** Run `npm audit` before each deployment.
+- **Secrets management.** Production should use a secrets manager (AWS Secrets Manager, HashiCorp Vault, Doppler) rather than baking `.env` into images.
 
-### UX Gaps (deferred from code review)
-- **Pagination** — All documents are fetched in one query. Add cursor-based pagination to the API and a "load more" or infinite scroll on the frontend.
-- **Multi-file upload** — The upload form accepts one file at a time. Add `multiple` attribute and queue uploads with per-file progress, respecting the 10/min rate limit.
-- **Dark/light mode** — The UI is hardcoded dark. Respect `prefers-color-scheme` via Tailwind's `dark:` variants.
-- **Accessibility** — Several interactive elements lack `aria-label`, `aria-expanded`, and `aria-live` attributes. Run `axe` or Lighthouse accessibility audit before launch.
+### UX
+- **Pagination.** Documents list is one query; add cursor-based pagination.
+- **Multi-file upload.** Single-file at a time today.
+- **Dark/light mode.** UI is hardcoded dark.
+- **Accessibility.** Missing `aria-label`/`aria-live` on several interactive elements.
 
 ## Roadmap
 
-- [x] Real PDF text extraction (pdf-parse)
-- [x] JWT auth middleware
-- [x] Rate limiting
-- [x] Input validation (UUID, body size limits)
-- [x] Anthropic Claude for LLM
-- [x] Multi-document queries (search across all ready documents)
-- [x] Streaming LLM responses (SSE via `/api/query/stream`)
-- [x] NextAuth.js integration on frontend (credentials provider + session)
-- [x] MongoDB dashboard page (`/dashboard` — aggregation pipeline stats)
-- [x] Token-aware chunking (js-tiktoken, cl100k_base encoding)
-- [x] Dead letter queue (`raw-docs-dlq` topic, DLQ on first failure)
-- [x] bcrypt password hashing + httpOnly cookie auth
+- [x] Real PDF text extraction (unpdf, replacing pdf-parse)
+- [x] Local embeddings (transformers.js + bge-small-en-v1.5)
+- [x] Postgres job queue (replacing Kafka)
+- [x] argon2id password hashing
+- [x] jose-based JWT (replacing jsonwebtoken)
+- [x] Rotating refresh tokens (no denylist, no NextAuth)
+- [x] LLM provider abstraction (Anthropic default)
 - [x] User isolation — per-user document scoping with ownership checks
-- [x] MongoDB-backed user store (replaces in-memory Map)
-- [x] GitHub OAuth via NextAuth.js with secure server-to-server provisioning
-- [x] Route protection via Next.js middleware
-- [x] Registration page + login/register linking
-- [x] Shared nav bar + sign-out
-- [x] Markdown rendering in chat
-- [ ] Token refresh / session extension
+- [x] Streaming LLM responses (SSE via `/api/query/stream`)
+- [x] Multi-document queries
+- [x] Token-aware chunking (js-tiktoken)
+- [x] Dashboard with aggregation pipeline stats
+- [ ] OAuth (GitHub) — hand-rolled, no NextAuth
 - [ ] Conversation persistence (MongoDB `conversations` collection)
 - [ ] File deduplication by content hash
 - [ ] Object storage for uploaded PDFs (S3/GCS/R2)

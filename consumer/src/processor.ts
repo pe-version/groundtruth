@@ -2,8 +2,6 @@ import { readFile } from "node:fs/promises";
 import pLimit from "p-limit";
 import { encodingForModel } from "js-tiktoken";
 import {
-  DocumentStatus,
-  type KafkaDocumentEvent,
   type MongoDB,
   type VectorStore,
   embedText,
@@ -15,11 +13,19 @@ const CHUNK_SIZE_TOKENS = 512;
 const CHUNK_OVERLAP_TOKENS = 64;
 const EMBED_CONCURRENCY = 5;
 
-// Use cl100k_base encoding (used by text-embedding-3-small)
+// cl100k_base via gpt-4o is a reasonable tokenizer for English text. The
+// embedding model has its own tokenizer internally; this is just for
+// chunking and is not required to match the embedding model exactly.
 const enc = encodingForModel("gpt-4o");
 
+interface ProcessInput {
+  documentId: string;
+  userId: string;
+  filename: string;
+}
+
 export async function processDocument(
-  event: KafkaDocumentEvent,
+  event: ProcessInput,
   db: MongoDB,
   vectorStore: VectorStore,
   uploadDir: string

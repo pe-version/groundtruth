@@ -1,15 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, UserPlus } from "lucide-react";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace("/api", "") ?? "http://localhost:8080";
+import { useAuth } from "@/lib/auth-provider";
 
 export default function RegisterPage() {
   const router = useRouter();
+  const { register } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -19,38 +18,15 @@ export default function RegisterPage() {
     e.preventDefault();
     setError("");
     setLoading(true);
-
-    const res = await fetch(`${API_URL}/api/auth/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
-
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setError(
-        res.status === 409
-          ? "That username is already taken."
-          : typeof data.error === "string"
-          ? data.error
-          : "Registration failed. Please try again."
-      );
-      setLoading(false);
-      return;
-    }
-
-    // Auto sign-in after successful registration.
-    const result = await signIn("credentials", {
-      username,
-      password,
-      redirect: false,
-    });
-
-    setLoading(false);
-    if (result?.error) {
-      router.push("/login");
-    } else {
+    try {
+      // register() also issues an access + refresh token, so we land
+      // straight on the documents page without a separate sign-in step.
+      await register(username, password);
       router.push("/documents");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Registration failed.");
+    } finally {
+      setLoading(false);
     }
   };
 

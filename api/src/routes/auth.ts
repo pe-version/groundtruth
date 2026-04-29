@@ -1,24 +1,76 @@
-import bcrypt from "bcryptjs";
-import { timingSafeEqual } from "crypto";
-import type { FastifyInstance } from "fastify";
+import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
+import type { FastifyInstance, FastifyReply } from "fastify";
 
-// 12 rounds aligns with current OWASP guidance for bcrypt — roughly 2× the
-// work factor of the bcryptjs default of 10. Hash time stays well under
-// one second on modern hardware, acceptable for interactive register/login.
-const SALT_ROUNDS = 12;
+// argon2id with library defaults (memoryCost=19456 KiB, timeCost=2,
+// parallelism=1) — these are the OWASP-recommended baseline settings as
+// of 2024 and target ~80–150ms on modern hardware. Each hash embeds its
+// own parameters, so future tuning doesn't invalidate stored hashes.
 
-// Usernames are restricted to a narrow charset so they can never collide with
-// the OAuth id namespace (`provider:providerId`) or trip Unicode-normalization
-// lookalike bugs (e.g., "alice" vs "alıce"). We also NFKC-normalize and
-// lowercase before storage/lookup so case and width variants map to one user.
+// Usernames are restricted to a narrow charset so they can never collide
+// with any provider:id form we may add later, and to dodge Unicode
+// look-alike bugs (e.g., "alice" vs "alıce"). We NFKC-normalize and
+// lowercase before storage/lookup so case and width variants map to one
+// canonical user.
 const USERNAME_REGEX = /^[a-z0-9_.-]{3,64}$/;
+
+const ACCESS_COOKIE = "groundtruth_token";
+const REFRESH_COOKIE = "groundtruth_refresh";
+
+// 15 min — matches the JwtService default. Cookie maxAge tracks the
+// access token's lifetime so the browser drops the cookie at the same
+// moment the server stops trusting the JWT.
+const ACCESS_COOKIE_MAX_AGE = 15 * 60;
+
+// 30 days — matches RefreshTokenStore default. Cookie path is scoped to
+// /api/auth so the refresh token never gets sent to any other route.
+const REFRESH_COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
+const REFRESH_COOKIE_PATH = "/api/auth";
 
 function normalizeUsername(input: string): string {
   return input.normalize("NFKC").toLowerCase();
 }
 
+function setAuthCookies(
+  reply: FastifyReply,
+  accessToken: string,
+  refreshToken: string
+) {
+  const secure = process.env.NODE_ENV === "production";
+  reply
+    .setCookie(ACCESS_COOKIE, accessToken, {
+      path: "/",
+      httpOnly: true,
+      secure,
+      sameSite: "strict",
+      maxAge: ACCESS_COOKIE_MAX_AGE,
+    })
+    .setCookie(REFRESH_COOKIE, refreshToken, {
+      path: REFRESH_COOKIE_PATH,
+      httpOnly: true,
+      secure,
+      sameSite: "strict",
+      maxAge: REFRESH_COOKIE_MAX_AGE,
+    });
+}
+
+function clearAuthCookies(reply: FastifyReply) {
+  reply
+    .clearCookie(ACCESS_COOKIE, { path: "/" })
+    .clearCookie(REFRESH_COOKIE, { path: REFRESH_COOKIE_PATH });
+}
+
 export async function authRoutes(fastify: FastifyInstance) {
-  // Register endpoint — creates a new user with hashed password stored in MongoDB.
+  // Issue both an access JWT (15 min) and a refresh token (30 days, stored
+  // hashed in Postgres). Sets cookies for the browser flow; also returns
+  // the access token in the JSON body so non-browser clients (curl, the
+  // smoke test) can use the Authorization header.
+  async function issueSession(userId: string, reply: FastifyReply) {
+    const accessToken = await fastify.jwt.signAccessToken(userId);
+    const { token: refreshToken } = await fastify.refreshTokens.issue(userId);
+    setAuthCookies(reply, accessToken, refreshToken);
+    return { token: accessToken, userId };
+  }
+
   fastify.post<{ Body: { username: string; password: string } }>(
     "/auth/register",
     {
@@ -50,24 +102,13 @@ export async function authRoutes(fastify: FastifyInstance) {
         return reply.code(409).send({ error: "User already exists" });
       }
 
-      const passwordHash = await bcrypt.hash(request.body.password, SALT_ROUNDS);
+      const passwordHash = await argon2Hash(request.body.password);
       await fastify.db.createUser(normalized, passwordHash);
 
-      const token = fastify.jwt.sign({ sub: normalized }, { expiresIn: "1h" });
-
-      reply
-        .setCookie("groundtruth_token", token, {
-          path: "/",
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "strict",
-          maxAge: 3600,
-        })
-        .send({ token, userId: normalized });
+      return reply.send(await issueSession(normalized, reply));
     }
   );
 
-  // Login endpoint — validates credentials against MongoDB and returns JWT.
   fastify.post<{ Body: { username: string; password: string } }>(
     "/auth/login",
     {
@@ -94,82 +135,76 @@ export async function authRoutes(fastify: FastifyInstance) {
         return reply.code(401).send({ error: "Invalid credentials" });
       }
 
-      const valid = await bcrypt.compare(request.body.password, user.passwordHash);
+      // argon2.verify throws on malformed hashes; the catch lets a missing
+      // or empty hash field naturally fail closed.
+      let valid = false;
+      try {
+        valid = await argon2Verify(user.passwordHash, request.body.password);
+      } catch {
+        valid = false;
+      }
       if (!valid) {
         return reply.code(401).send({ error: "Invalid credentials" });
       }
 
-      const token = fastify.jwt.sign({ sub: normalized }, { expiresIn: "1h" });
-
-      reply
-        .setCookie("groundtruth_token", token, {
-          path: "/",
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "strict",
-          maxAge: 3600,
-        })
-        .send({ token, userId: normalized });
+      return reply.send(await issueSession(normalized, reply));
     }
   );
 
-  // OAuth token endpoint — server-to-server only.
-  //
-  // Called exclusively by the NextAuth server-side JWT callback after a
-  // successful OAuth login. The caller presents OAUTH_SERVER_SECRET (a shared
-  // secret that never passes through the browser) to prove it is the trusted
-  // NextAuth server. In exchange it receives a standard API JWT, which NextAuth
-  // stores in the session and the frontend uses for all subsequent requests.
-  //
-  // OAuth users have no password stored in MongoDB — their passwordHash field
-  // is an empty string. This means they cannot authenticate via /auth/login
-  // even if an attacker knows their userId; the only path to a JWT is through
-  // this endpoint, which requires the server secret.
-  //
-  // Why not share a password? See ADR in README § Authentication.
-  fastify.post<{ Body: { provider: string; providerId: string; secret: string } }>(
-    "/auth/oauth-token",
+  // Refresh: read the refresh cookie, mint a new access token, ROTATE the
+  // refresh token (delete old, issue new). Single-use refresh tokens make
+  // theft detectable: if both the legitimate user and an attacker present
+  // the same refresh token, the second one to arrive sees a 401 and the
+  // owner's session continues.
+  fastify.post(
+    "/auth/refresh",
     {
       config: {
         public: true,
         rateLimit: { max: 30, timeWindow: "1 minute" },
       },
-      schema: {
-        body: {
-          type: "object",
-          required: ["provider", "providerId", "secret"],
-          properties: {
-            provider:   { type: "string", minLength: 1, maxLength: 50 },
-            providerId: { type: "string", minLength: 1, maxLength: 200 },
-            secret:     { type: "string", minLength: 1 },
-          },
-        },
+    },
+    async (request, reply) => {
+      const cookie = request.cookies?.[REFRESH_COOKIE];
+      if (!cookie) {
+        return reply.code(401).send({ error: "No refresh token" });
+      }
+
+      const found = await fastify.refreshTokens.find(cookie);
+      if (!found) {
+        // Clear the stale cookie so the client doesn't keep retrying.
+        clearAuthCookies(reply);
+        return reply.code(401).send({ error: "Invalid refresh token" });
+      }
+
+      // Rotate: revoke the presented token before issuing a new one. If
+      // the same token is presented twice (replay), the second attempt
+      // hits the 401 path above.
+      await fastify.refreshTokens.revoke(cookie);
+      return reply.send(await issueSession(found.userId, reply));
+    }
+  );
+
+  // Logout: revoke the presented refresh token (best-effort — a missing
+  // cookie still returns 204). Access tokens are stateless, so the access
+  // cookie just gets cleared on the client; the JWT itself remains
+  // technically valid until its 15-minute expiry — that's the documented
+  // tradeoff of stateless access tokens.
+  fastify.post(
+    "/auth/logout",
+    {
+      config: {
+        public: true,
+        rateLimit: { max: 30, timeWindow: "1 minute" },
       },
     },
     async (request, reply) => {
-      const { provider, providerId, secret } = request.body;
-      const serverSecret = fastify.config.OAUTH_SERVER_SECRET;
-
-      if (!serverSecret) {
-        return reply.code(503).send({ error: "OAuth login not configured" });
+      const cookie = request.cookies?.[REFRESH_COOKIE];
+      if (cookie) {
+        await fastify.refreshTokens.revoke(cookie);
       }
-
-      // Timing-safe comparison prevents secret enumeration via response time.
-      const provided = Buffer.from(secret);
-      const expected = Buffer.from(serverSecret);
-      const valid =
-        provided.length === expected.length &&
-        timingSafeEqual(provided, expected);
-
-      if (!valid) {
-        return reply.code(401).send({ error: "Unauthorized" });
-      }
-
-      const userId = `${provider}:${providerId}`;
-      await fastify.db.upsertOAuthUser(userId, provider);
-
-      const token = fastify.jwt.sign({ sub: userId }, { expiresIn: "1h" });
-      return reply.send({ token, userId });
+      clearAuthCookies(reply);
+      return reply.code(204).send();
     }
   );
 }

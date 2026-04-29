@@ -12,10 +12,9 @@
   },
   "dependencies": {
     "@groundtruth/shared": "*",
-    "kafkajs": "^2.2.4",
     "p-limit": "^6.1.0",
     "js-tiktoken": "^1.0.12",
-    "pdf-parse": "^1.1.1"
+    "unpdf": "^0.12.1"
   },
   "devDependencies": {
     "@types/node": "^20",

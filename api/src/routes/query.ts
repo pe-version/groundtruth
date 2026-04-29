@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { embedText, UUID_REGEX, UUID_PATTERN } from "@groundtruth/shared";
-import { streamClaude } from "../services/anthropic.js";
+import { embedText, UUID_PATTERN } from "@groundtruth/shared";
 
 interface QueryBody {
   documentId?: string;
@@ -8,8 +7,16 @@ interface QueryBody {
   topK?: number;
 }
 
+const SYSTEM_PROMPT = `You are a helpful assistant. Answer the user's question using ONLY the provided document excerpts.
+If the answer cannot be found in the excerpts, say so clearly.
+Always be concise and cite which excerpt supports your answer.`;
+
+function buildUserPrompt(context: string, question: string): string {
+  return `Document excerpts:\n\n${context}\n\nQuestion: ${question}`;
+}
+
 export async function queryRoutes(fastify: FastifyInstance) {
-  const { vectorStore, db } = fastify;
+  const { vectorStore, db, llm } = fastify;
 
   // Non-streaming query
   fastify.post<{ Body: QueryBody }>(
@@ -61,7 +68,12 @@ export async function queryRoutes(fastify: FastifyInstance) {
       }
 
       const { contextString, sources } = buildContext(chunks);
-      const answer = await collectStream(streamClaude(contextString, question));
+      const answer = await collectStream(
+        llm.streamAnswer({
+          systemPrompt: SYSTEM_PROMPT,
+          userPrompt: buildUserPrompt(contextString, question),
+        })
+      );
 
       return { answer, sources };
     }
@@ -139,7 +151,11 @@ export async function queryRoutes(fastify: FastifyInstance) {
       // provider-specific details (URLs, account ids, internal 5xx text) —
       // log server-side, send a generic message to the client.
       try {
-        for await (const token of streamClaude(contextString, question)) {
+        const stream = llm.streamAnswer({
+          systemPrompt: SYSTEM_PROMPT,
+          userPrompt: buildUserPrompt(contextString, question),
+        });
+        for await (const token of stream) {
           reply.raw.write(
             `data: ${JSON.stringify({ type: "delta", text: token })}\n\n`
           );
