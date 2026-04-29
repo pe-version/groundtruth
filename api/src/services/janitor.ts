@@ -1,14 +1,13 @@
 import { readdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import {
-  DocumentStatus,
-  type MongoDB,
+  type MetadataStore,
   type VectorStore,
   type Logger,
 } from "@groundtruth/shared";
 
 export interface JanitorDeps {
-  db: MongoDB;
+  db: MetadataStore;
   vectorStore: VectorStore;
   uploadDir: string;
   log: Logger;
@@ -25,21 +24,21 @@ export interface JanitorReport {
 }
 
 // Runs a single reconciliation pass across the three storage systems:
-//   1. Files on disk with no matching Mongo doc (and old enough)
-//   2. Chunks in pgvector whose document_id isn't in Mongo
-//   3. Mongo docs stuck in pending/processing past the age threshold
+//   1. Files on disk with no matching documents row (and old enough)
+//   2. Chunks in pgvector whose document_id isn't in `documents`
+//   3. `documents` rows stuck in pending/processing past the age threshold
 //
-// Ordering matters: we read Mongo first, then list filesystem / pgvector, so
-// an upload that registers in Mongo after our Mongo read but before our fs
-// read is still treated as live (we'll see the file but the Mongo entry won't
-// be in our snapshot — it gets protected by the age threshold instead).
+// Ordering matters: we read the documents table first, then list filesystem
+// / pgvector, so an upload that registers in the table after our read but
+// before our fs scan is still treated as live (we'll see the file, but the
+// row won't be in our snapshot — it gets protected by the age threshold).
 export async function runJanitor(deps: JanitorDeps): Promise<JanitorReport> {
   const { db, vectorStore, uploadDir, log, orphanAgeMs } = deps;
   const now = Date.now();
   const ageThreshold = new Date(now - orphanAgeMs);
 
-  const mongoDocs = await db.listAllDocumentIds();
-  const knownIds = new Set(mongoDocs.map((d) => d.id));
+  const docs = await db.listAllDocumentIds();
+  const knownIds = new Set(docs.map((d) => d.id));
 
   const report: JanitorReport = {
     orphanFilesDeleted: 0,

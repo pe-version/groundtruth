@@ -15,21 +15,21 @@ The simplest stack that demonstrates the architecture. Every external dependency
          │ REST + JWT (15-min access) + httpOnly refresh cookie
 ┌────────▼────────┐
 │  Fastify (8080) │  — Auth, rate limiting, file handling, RAG query
-└──┬───────┬──┬───┘
-   │       │  └─ pgvector similarity search (read path)
-   │       │
-   │       └─── Postgres job queue (enqueue on upload)
-   │
-   ▼
+└────────┬────────┘
+         │
+         ▼
 ┌─────────────────────┐
 │  TS Consumer        │  — claims jobs via SELECT FOR UPDATE SKIP LOCKED
-└──┬─────────────┬────┘    extract → chunk → embed (local) → index
-   │             │
-   ▼             ▼
-┌──────────┐  ┌─────────────────────┐
-│  MongoDB │  │  Postgres + pgvector│  — chunks + queue (one cluster)
-│ metadata │  │  embeddings (384d)  │
-└──────────┘  └─────────────────────┘
+└────────┬────────────┘    extract → chunk → embed (local) → index
+         │
+         ▼
+┌──────────────────────────────────────────────┐
+│  Postgres + pgvector  (single instance)      │
+│  • users, documents          (metadata)      │
+│  • document_jobs             (queue)         │
+│  • refresh_tokens            (auth state)    │
+│  • chunks vector(384)        (embeddings)    │
+└──────────────────────────────────────────────┘
 ```
 
 ## Stack
@@ -44,7 +44,7 @@ The simplest stack that demonstrates the architecture. Every external dependency
 | PDF extraction | `unpdf` (pdf.js wrapper) | Maintained, ESM, no native deps; replaces `pdf-parse` |
 | Message broker | None — Postgres `SELECT FOR UPDATE SKIP LOCKED` | One fewer container; Postgres is already in the stack |
 | Vector store | Postgres + pgvector | Already running for the queue; no extra DB |
-| Document metadata | MongoDB | Document-shaped data, aggregation pipelines power the dashboard |
+| Document metadata | Postgres `documents` + `users` tables | One database; the dashboard's "aggregation pipeline" is a single GROUP BY |
 | Auth | argon2id passwords + 15-min access JWT (jose) + 30-day rotating refresh tokens (Postgres) | No NextAuth, no `jsonwebtoken`, no denylist; revocation is a row delete |
 
 ## Quick Start
@@ -66,7 +66,7 @@ cp .env.example .env
 ### 2. Start infrastructure
 
 ```bash
-docker compose up -d mongo postgres
+docker compose up -d postgres
 # Postgres has a healthcheck; dependents wait on it automatically.
 ```
 
@@ -104,7 +104,7 @@ groundtruth/
 │       ├── types.ts                  # Document, User, Chunk types
 │       ├── config.ts                 # Zod-validated env config
 │       ├── logger.ts                 # Shared pino structured logger factory
-│       ├── mongo.ts                  # MongoDB client (documents + users)
+│       ├── metadata-store.ts        # Postgres-backed users + documents store
 │       ├── vector-store.ts           # pgvector client (insert, search, delete)
 │       ├── embedding.ts              # Local transformers.js embeddings
 │       ├── job-queue.ts              # Postgres SKIP LOCKED queue (replaces Kafka)
@@ -218,9 +218,9 @@ RETURNING ...;
 
 ### ADR: No denylist — short access tokens + rotating refresh tokens
 
-**Decision:** Access tokens are 15-minute JWTs (jose, HS256). Refresh tokens are 30-day random secrets, hashed with SHA-256 and stored in Postgres. Revocation = `DELETE` on the row. No per-request lookup, no Redis, no MongoDB-backed denylist.
+**Decision:** Access tokens are 15-minute JWTs (jose, HS256). Refresh tokens are 30-day random secrets, hashed with SHA-256 and stored in Postgres. Revocation = `DELETE` on the row. No per-request lookup, no separate denylist store.
 
-**Why not a denylist.** A denylist defeats the only thing a stateless JWT is good for (zero per-request DB lookup). The design proposed earlier in this README — "store revoked tokens in MongoDB or Redis" — was wrong on two counts: MongoDB is the wrong store for that workload (Redis would be marginally less wrong) AND the right answer was not a denylist at all.
+**Why not a denylist.** A denylist defeats the only thing a stateless JWT is good for (zero per-request DB lookup). The right answer is short access tokens + rotating refresh tokens, not a denylist of any kind.
 
 **What this design gives us.**
 - Stateless access path: every authenticated request verifies the JWT signature locally; no auth lookup.
@@ -296,9 +296,9 @@ The architecture is intentionally small, but several gaps remain before producti
 - **"Sign out everywhere".** `RefreshTokenStore.revokeAllForUser` is implemented but not exposed via an endpoint.
 
 ### Data & Storage
-- **MongoDB indexes.** Add `{ userId: 1 }` on `documents` for list/filter performance.
+- **Stable user IDs.** Today `request.user.sub` is the lowercased username, used as the FK on documents/jobs. A future username change or OAuth merge silently orphans data — switch to immutable UUIDs.
 - **File storage.** Uploaded PDFs are written to a local volume. Production = S3/GCS so the API and consumer can run on separate hosts.
-- **Vector tombstoning.** Deleted documents remove MongoDB metadata first, pgvector chunks second; a failure between them leaves stale vectors. Move to a two-phase delete or a janitor sweep.
+- **Vector tombstoning.** Document deletion removes the `documents` row first, pgvector chunks second; a failure between them leaves stale vectors. Move to a single transaction or a janitor sweep.
 - **Postgres split.** One Postgres carries both pgvector and the queue. If vector-query load grows enough to compete with queue locking, split them onto separate clusters with appropriate sizing.
 - **Refresh-token janitor.** `pruneExpired()` exists but isn't invoked yet; wire it into the existing janitor loop.
 - **Job audit retention.** Completed and failed rows accumulate; reap with a janitor sweep (e.g., delete completed > 7 days, failed > 30 days).
@@ -312,7 +312,7 @@ The architecture is intentionally small, but several gaps remain before producti
 ### Reliability
 - **Idempotent upload.** Re-uploading the same PDF creates a duplicate document. Add a content hash and dedupe by `(hash, userId)`.
 - **API timeouts.** Anthropic calls have a 60s timeout; embedding calls do not. Add `AbortController` timeouts to the embedding pipeline so a stuck inference doesn't pin a worker.
-- **Health check depth.** `/health` returns 200 unconditionally. A deep check would probe Postgres + Mongo connectivity so a load balancer can drop unhealthy instances.
+- **Health check depth.** `/health` returns 200 unconditionally. A deep check would probe Postgres connectivity so a load balancer can drop unhealthy instances.
 
 ### Security
 - **CORS in production.** `CORS_ORIGINS` defaults to `http://localhost:3000`; production must set it to the exact production domain.
@@ -341,7 +341,7 @@ The architecture is intentionally small, but several gaps remain before producti
 - [x] Token-aware chunking (js-tiktoken)
 - [x] Dashboard with aggregation pipeline stats
 - [ ] OAuth (GitHub) — hand-rolled, no NextAuth
-- [ ] Conversation persistence (MongoDB `conversations` collection)
+- [ ] Conversation persistence (Postgres `conversations` table)
 - [ ] File deduplication by content hash
 - [ ] Object storage for uploaded PDFs (S3/GCS/R2)
 - [ ] Prometheus metrics + Grafana dashboard

@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import pLimit from "p-limit";
 import { encodingForModel } from "js-tiktoken";
 import {
-  type MongoDB,
+  type MetadataStore,
   type VectorStore,
   embedText,
   getUploadPath,
@@ -26,7 +26,7 @@ interface ProcessInput {
 
 export async function processDocument(
   event: ProcessInput,
-  db: MongoDB,
+  db: MetadataStore,
   vectorStore: VectorStore,
   uploadDir: string
 ): Promise<number> {

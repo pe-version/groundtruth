@@ -1,20 +1,12 @@
 services:
-  # ─── Databases ───────────────────────────────────────────────────
-  # A single Postgres instance carries two unrelated workloads here:
+  # ─── Datastore ───────────────────────────────────────────────────
+  # One Postgres serves three workloads:
   #   1. pgvector chunk storage (read-heavy, CPU/memory bound)
-  #   2. document_jobs queue (replaces Kafka; small, write-heavy, locked)
-  # That's deliberate — neither workload is large enough to justify two
-  # clusters. Splitting becomes worth it only if vector-query load starts
-  # contending with queue locking. See README § Production Readiness.
-  mongo:
-    image: mongo:7.0
-    ports:
-      - "27017:27017"
-    environment:
-      MONGO_INITDB_DATABASE: groundtruth
-    volumes:
-      - mongo_data:/data/db
-
+  #   2. document_jobs queue (SELECT FOR UPDATE SKIP LOCKED, write-heavy)
+  #   3. metadata (users + documents) and refresh tokens
+  # All three are small enough on their own that running them on one
+  # instance is the right call here. Splitting becomes worth it only
+  # under heavy vector-query load that competes with queue locking.
   postgres:
     image: pgvector/pgvector:pg16
     ports:
@@ -42,13 +34,10 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      mongo:
-        condition: service_started
       postgres:
         condition: service_healthy
     environment:
       PORT: 8080
-      MONGO_URI: mongodb://mongo:27017/groundtruth
       POSTGRES_DSN: postgres://groundtruth:${POSTGRES_PASSWORD:-groundtruth}@postgres:5432/groundtruth?sslmode=disable
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       JWT_SECRET: ${JWT_SECRET}
@@ -60,12 +49,9 @@ services:
   consumer:
     build: ./consumer
     depends_on:
-      mongo:
-        condition: service_started
       postgres:
         condition: service_healthy
     environment:
-      MONGO_URI: mongodb://mongo:27017/groundtruth
       POSTGRES_DSN: postgres://groundtruth:${POSTGRES_PASSWORD:-groundtruth}@postgres:5432/groundtruth?sslmode=disable
       UPLOAD_DIR: /tmp/uploads
     volumes:
@@ -80,6 +66,5 @@ services:
       NEXT_PUBLIC_API_URL: http://api:8080/api
 
 volumes:
-  mongo_data:
   pg_data:
   uploads:

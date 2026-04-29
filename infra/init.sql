@@ -73,3 +73,42 @@ CREATE INDEX IF NOT EXISTS refresh_tokens_user_idx
 -- Lets a periodic janitor drop expired rows in O(log n).
 CREATE INDEX IF NOT EXISTS refresh_tokens_expiry_idx
     ON refresh_tokens (expires_at);
+
+-- ── Users ───────────────────────────────────────────────────────────────────
+-- Replaces the MongoDB users collection. The id is the canonical user
+-- identifier (the username for credentials accounts, or "provider:id" for
+-- OAuth-provisioned accounts when that flow comes back). password_hash is
+-- empty for OAuth users — argon2.verify on an empty string returns false,
+-- so /auth/login is categorically closed to them.
+CREATE TABLE IF NOT EXISTS users (
+    id              TEXT        PRIMARY KEY,
+    password_hash   TEXT        NOT NULL DEFAULT '',
+    oauth_provider  TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ── Documents ───────────────────────────────────────────────────────────────
+-- Replaces the MongoDB documents collection. Primary key is the upload UUID
+-- so it can be referenced from the chunks and document_jobs tables without
+-- a synthetic surrogate key.
+CREATE TABLE IF NOT EXISTS documents (
+    id            TEXT        PRIMARY KEY,
+    user_id       TEXT        NOT NULL,
+    filename      TEXT        NOT NULL,
+    status        TEXT        NOT NULL,
+    chunk_count   INT         NOT NULL DEFAULT 0,
+    error_msg     TEXT,
+    uploaded_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- The list-by-user query is the hot path; ORDER BY uploaded_at DESC is the
+-- canonical view shape. Reverse-order index avoids a sort.
+CREATE INDEX IF NOT EXISTS documents_user_uploaded_idx
+    ON documents (user_id, uploaded_at DESC);
+
+-- Janitor scans for stuck pending/processing rows older than a threshold —
+-- partial index keeps that query cheap even if the table grows large.
+CREATE INDEX IF NOT EXISTS documents_stuck_idx
+    ON documents (updated_at)
+    WHERE status IN ('pending', 'processing');

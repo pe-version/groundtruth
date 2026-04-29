@@ -1,5 +1,5 @@
 import type {
-  MongoDB,
+  MetadataStore,
   VectorStore,
   JobQueue,
   RefreshTokenStore,
@@ -10,7 +10,7 @@ import type { LlmProvider } from "./services/llm.js";
 
 declare module "fastify" {
   interface FastifyInstance {
-    db: MongoDB;
+    db: MetadataStore;
     vectorStore: VectorStore;
     jobQueue: JobQueue;
     refreshTokens: RefreshTokenStore;

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   loadConsumerConfig,
-  MongoDB,
+  MetadataStore,
   VectorStore,
   JobQueue,
   createLogger,
@@ -18,7 +18,7 @@ async function main() {
   // unlikely and the row also has a created_at to disambiguate.
   const workerId = `worker-${randomUUID().slice(0, 8)}`;
 
-  const db = await MongoDB.connect(config.MONGO_URI);
+  const db = await MetadataStore.connect(config.POSTGRES_DSN);
   const vectorStore = await VectorStore.connect(config.POSTGRES_DSN);
   const queue = await JobQueue.connect(config.POSTGRES_DSN);
 
@@ -38,7 +38,7 @@ async function main() {
     if (activeJob) await activeJob.catch(() => undefined);
     try { await queue.close(); } catch (err) { log.error({ err }, "Error closing JobQueue"); }
     try { await vectorStore.close(); } catch (err) { log.error({ err }, "Error closing VectorStore"); }
-    try { await db.disconnect(); } catch (err) { log.error({ err }, "Error disconnecting MongoDB"); }
+    try { await db.disconnect(); } catch (err) { log.error({ err }, "Error disconnecting MetadataStore"); }
     process.exit(0);
   };
 

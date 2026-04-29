@@ -3,7 +3,6 @@ import { apiConfigSchema, consumerConfigSchema } from "../src/config.js";
 
 describe("apiConfigSchema", () => {
   const validEnv = {
-    MONGO_URI: "mongodb://localhost:27017/groundtruth",
     POSTGRES_DSN: "postgres://groundtruth:groundtruth@localhost:5432/groundtruth",
     ANTHROPIC_API_KEY: "sk-ant-test-key-12345",
     JWT_SECRET: "this-is-a-long-enough-secret-for-32-chars!!",
@@ -34,7 +33,6 @@ describe("apiConfigSchema", () => {
 
 describe("consumerConfigSchema", () => {
   const validEnv = {
-    MONGO_URI: "mongodb://localhost:27017/groundtruth",
     POSTGRES_DSN: "postgres://groundtruth:groundtruth@localhost:5432/groundtruth",
   };
 

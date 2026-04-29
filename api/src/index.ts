@@ -5,7 +5,7 @@ import rateLimit from "@fastify/rate-limit";
 import multipart from "@fastify/multipart";
 import helmet from "@fastify/helmet";
 import cookie from "@fastify/cookie";
-import { loadApiConfig, MongoDB, VectorStore, JobQueue, RefreshTokenStore, createLogger } from "@groundtruth/shared";
+import { loadApiConfig, MetadataStore, VectorStore, JobQueue, RefreshTokenStore, createLogger } from "@groundtruth/shared";
 import { documentRoutes } from "./routes/documents.js";
 import { queryRoutes } from "./routes/query.js";
 import { healthRoutes } from "./routes/health.js";
@@ -55,7 +55,7 @@ async function main() {
 
   // --- Dependencies -------------------------------------------------------
 
-  const db = await MongoDB.connect(config.MONGO_URI);
+  const db = await MetadataStore.connect(config.POSTGRES_DSN);
   const vectorStore = await VectorStore.connect(config.POSTGRES_DSN);
   const jobQueue = await JobQueue.connect(config.POSTGRES_DSN);
   const refreshTokens = await RefreshTokenStore.connect(config.POSTGRES_DSN);
@@ -136,7 +136,7 @@ async function main() {
     try { await jobQueue.close(); } catch (err) { fastify.log.error(err, "Error closing JobQueue"); }
     try { await refreshTokens.close(); } catch (err) { fastify.log.error(err, "Error closing RefreshTokenStore"); }
     try { await vectorStore.close(); } catch (err) { fastify.log.error(err, "Error closing VectorStore"); }
-    try { await db.disconnect(); } catch (err) { fastify.log.error(err, "Error disconnecting MongoDB"); }
+    try { await db.disconnect(); } catch (err) { fastify.log.error(err, "Error disconnecting MetadataStore"); }
     process.exit(0);
   };
 

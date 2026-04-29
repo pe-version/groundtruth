@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 const baseSchema = z.object({
-  MONGO_URI: z.string().min(1),
   POSTGRES_DSN: z.string().min(1),
 });
 

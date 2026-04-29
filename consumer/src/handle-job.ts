@@ -2,13 +2,13 @@ import {
   DocumentStatus,
   type DocumentJob,
   type Logger,
-  type MongoDB,
+  type MetadataStore,
   type VectorStore,
 } from "@groundtruth/shared";
 import { processDocument } from "./processor.js";
 
 export interface HandleJobDeps {
-  db: MongoDB;
+  db: MetadataStore;
   vectorStore: VectorStore;
   uploadDir: string;
   log: Logger;
