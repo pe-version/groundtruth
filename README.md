@@ -197,53 +197,26 @@ A demo seed script is in `scripts/seed-fixtures.sh` — it downloads a couple of
 
 ## Production Readiness
 
-What's missing for a real production deployment, grouped by where the work would land. Each item is a known gap, not a TODO masquerading as documentation.
+What's missing for a real production deployment. Each item is a known gap, not a TODO masquerading as documentation.
 
 **Auth & identity**
 
-- OAuth (e.g., GitHub). The previous build used NextAuth; current iteration is credentials-only. Re-adding it means a hand-rolled OAuth client and a separate provisioning path that issues the same access+refresh pair.
-- Password reset (needs SMTP / transactional email).
-- Email verification.
-- A `/auth/logout-everywhere` endpoint that calls the existing `revokeAllForUser`.
-- Stable user IDs. Today `request.user.sub` is the lowercased username, which doubles as the FK on documents/jobs. A future username change or OAuth merge silently orphans data; switching to immutable UUIDs fixes that.
+- OAuth (e.g., GitHub). Credentials-only today; re-adding it means a hand-rolled OAuth client and a separate provisioning path that issues the same access+refresh pair.
+- Stable user IDs. Today `request.user.sub` is the lowercased username, which doubles as the FK on documents/jobs. A username change or OAuth merge silently orphans data; switching to immutable UUIDs fixes that.
 
 **Data & storage**
 
 - Object storage for uploads (S3/GCS/R2) so the API and consumer can run on separate hosts.
-- Two-phase delete for documents: today the metadata row goes first, the pgvector chunks second; a failure between leaves stale vectors. Either wrap in a transaction or have the janitor reap them.
-- Refresh-token janitor. `pruneExpired()` exists; not yet wired into the periodic loop.
-- Job audit retention. `completed` and `failed` rows accumulate; reap on a TTL (e.g., completed > 7 days, failed > 30).
-- Postgres split. One instance carries metadata, the queue, refresh tokens, and pgvector. If vector-query load grows enough to compete with queue locking, split them.
+- Two-phase delete for documents: today the metadata row goes first, pgvector chunks second. A failure between the two leaves stale vectors; the janitor reaps them, but a single transaction is the right fix.
 
 **Reliability**
 
+- Bake the embedding model into the consumer image. Today it downloads from the HuggingFace CDN on first job — a third-party hot-path dependency.
 - Idempotent upload. Re-uploading the same PDF creates a duplicate document; dedupe by `(content_hash, user_id)`.
-- Bake the embedding model into the consumer image. Today it downloads from the HuggingFace CDN on first job, which is a third-party hot-path dependency the README's embedding section claimed it had removed.
 - Sandbox the PDF parser. `unpdf` is more robust than `pdf-parse`, but pdf.js can still pin a CPU on a malicious document. Worth a separate container with cgroup / seccomp limits in production.
 
 **Security**
 
-- CSRF defense. The auth middleware accepts both `Authorization: Bearer` and the cookie. `sameSite: strict` is enough today; the moment that gets relaxed for SSO, every state-changing route is exposed via the cookie path. Pick one transport, or add a double-submit CSRF token if cookies stay.
-- HS256 with a shared secret is fine for a monolith; an RS256/EdDSA key pair is the right move once a second verifier exists.
-- No `iss` / `aud` / `jti` claims. `verifyAccessToken` only checks `sub`.
+- CSRF defense. The auth middleware accepts both `Authorization: Bearer` and the cookie. `sameSite: strict` is enough today; the moment that gets relaxed for SSO, every state-changing route is exposed via the cookie path. Pick one transport, or add a double-submit CSRF token.
 - Rate limits are per-IP only. Login limit (10/min/IP) is weak against distributed brute-force; want per-username + per-IP with backoff.
-- Password policy is length-only. Add a breach-list check (HIBP k-anonymity).
-- Secrets in `.env`. Production: a secrets manager (AWS Secrets Manager, Vault, Doppler), injected at runtime.
-
-**Frontend**
-
-- Pagination on the documents list (cursor-based).
-- Multi-file upload with per-file progress.
-- Prefers-color-scheme support; accessibility audit.
-
-## Roadmap
-
-- [ ] Stable UUID user IDs + Postgres RLS for tenant isolation
-- [ ] OAuth (GitHub), hand-rolled, no NextAuth
-- [ ] Object storage for uploaded PDFs
-- [ ] Idempotent upload by content hash
-- [ ] Bake embedding model into the consumer image
-- [ ] Refresh-token + completed-job janitor sweeps
-- [ ] CSRF defense, password breach-list check
-- [ ] Conversation persistence in Postgres
-- [ ] Answer-quality evals
+- HS256 with a shared secret is fine for a monolith; an RS256/EdDSA key pair is the right move once a second verifier exists.
