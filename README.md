@@ -149,7 +149,7 @@ To run multiple workers: `docker compose up --scale consumer=3`. SKIP LOCKED han
 
 `bge-small-en-v1.5` runs in-process via `@xenova/transformers` — 384 dims, ~33 MB quantized, CPU-only. The pgvector column is declared `vector(384)`; `EMBED_DIM` in `packages/shared/src/embedding.ts` has to agree, and changing the model means re-embedding everything.
 
-Generation quality matters more than embedding quality for grounded Q&A, so Claude is still hosted. Embeddings are an undifferentiated capability, and dropping the OpenAI dependency removed a paid API key, an SDK, and a third-party network hop on every chunk. The cost is a ~33 MB cold-start download (cached afterwards) and ~250 MB resident while the consumer is up.
+Generation quality matters more than embedding quality for grounded Q&A, so Claude is still hosted. Embeddings are an undifferentiated capability; running them locally means no paid API key, no SDK, and no third-party network hop on every chunk. The cost is a ~33 MB cold-start download (cached afterwards) and ~250 MB resident while the consumer is up.
 
 ## LLM provider seam
 
